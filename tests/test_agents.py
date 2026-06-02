@@ -9,7 +9,7 @@ import urllib.error
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agents import AgentResult, MockAgent, MockConsolidator, OpenAIConsolidator, OpenAIReviewer, RetryConfig, _post_json
+from agents import AgentResult, GrokConsolidator, MockAgent, MockConsolidator, OpenAIConsolidator, OpenAIReviewer, RetryConfig, _post_json
 
 
 class AgentIntegrationTests(unittest.TestCase):
@@ -20,6 +20,24 @@ class AgentIntegrationTests(unittest.TestCase):
         text = reviewer.review("plan")
         self.assertIn("OpenAI Review", text)
         self.assertIn("Looks good", text)
+
+    @patch("agents._post_json")
+    def test_openai_reviewer_includes_persona_prompt(self, mock_post_json) -> None:
+        mock_post_json.return_value = {"output_text": "# Security Review"}
+        reviewer = OpenAIReviewer(
+            "k",
+            "m",
+            RetryConfig(),
+            "https://api.openai.com/v1",
+            "Security",
+            "Focus on IDOR/BOLA and privacy.",
+        )
+
+        reviewer.review("plan")
+
+        payload = mock_post_json.call_args.args[2]
+        self.assertIn("Reviewer-specific focus", payload["input"])
+        self.assertIn("Focus on IDOR/BOLA and privacy.", payload["input"])
 
     def test_mock_agent_uses_architect_review_sections(self) -> None:
         text = MockAgent("Claude").review("plan")
@@ -63,6 +81,24 @@ class AgentIntegrationTests(unittest.TestCase):
         current = "# Plan\n\nBase"
         out = consolidator.consolidate(current, [AgentResult("Claude", "- issue")])
         self.assertEqual(out, current)
+
+    @patch("agents._post_json")
+    def test_grok_consolidator_includes_arbitrator_prompt(self, mock_post_json) -> None:
+        mock_post_json.return_value = {"choices": [{"message": {"content": "# Final Plan"}}]}
+        consolidator = GrokConsolidator(
+            "k",
+            "m",
+            RetryConfig(),
+            "https://api.x.ai/v1",
+            "Arbitrator",
+            "Resolve contradictions and preserve dissent.",
+        )
+
+        out = consolidator.consolidate("# Plan", [AgentResult("Security", "- IDOR gap")])
+
+        payload = mock_post_json.call_args.args[2]
+        self.assertEqual(out, "# Final Plan")
+        self.assertIn("Resolve contradictions and preserve dissent.", payload["messages"][0]["content"])
 
     @patch("agents._post_json", side_effect=RuntimeError("network down"))
     def test_openai_reviewer_raises_on_provider_failure(self, _mock_post_json) -> None:

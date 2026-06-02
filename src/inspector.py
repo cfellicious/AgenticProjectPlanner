@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +12,10 @@ from typing import Dict, List
 
 from agents import (
     AgentResult,
+    AnthropicConsolidator,
     AnthropicReviewer,
+    DEFAULT_REVIEWER_PERSONAS,
+    GrokConsolidator,
     GrokReviewer,
     MockAgent,
     MockConsolidator,
@@ -19,7 +23,16 @@ from agents import (
     OpenAIReviewer,
     RetryConfig,
 )
-from config import env_config, load_dotenv
+from config import (
+    RUNTIME_PROMPT_COMPOSITION_FIELD,
+    SHARED_PROMPT_FIELDS,
+    configured_arbitrator_spec,
+    configured_reviewer_specs,
+    default_config_path,
+    env_config,
+    load_dotenv,
+    mock_reviewer_names,
+)
 from planner import (
     append_review_clarifications,
     build_initial_plan,
@@ -408,6 +421,230 @@ def build_negative_reference(plan_md: str, product_name: str, source_artifact: P
     return "\n".join(lines).strip() + "\n"
 
 
+def _api_key_for_spec(spec: Dict[str, str], config: Dict[str, str]) -> str:
+    if "api_key" in spec:
+        return spec["api_key"]
+    api_key_env = spec.get("api_key_env", "").strip()
+    if api_key_env:
+        return os.getenv(api_key_env, "")
+
+    provider = spec["provider"]
+    if provider == "anthropic":
+        return config["anthropic_api_key"]
+    if provider in {"openai", "responses"}:
+        return config["openai_api_key"]
+    if provider in {"grok", "openai_chat", "chat_completions"}:
+        return config["grok_api_key"] or config["openai_api_key"]
+    return ""
+
+
+def _provider_defaults(provider: str, config: Dict[str, str]) -> tuple[str, str]:
+    if provider == "anthropic":
+        return config["anthropic_model"], config["anthropic_base_url"]
+    if provider in {"openai", "responses"}:
+        return config["openai_model"], config["openai_base_url"]
+    if provider in {"grok", "openai_chat", "chat_completions"}:
+        return config["grok_model"], config["grok_base_url"]
+    return "", ""
+
+
+def _format_shared_prompt_value(value: str) -> str:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return json.dumps(parsed, indent=2)
+
+
+def _shared_prompt_context(config: Dict[str, str]) -> str:
+    sections: List[str] = []
+    for field in SHARED_PROMPT_FIELDS:
+        value = config.get(field, "").strip()
+        if not value:
+            continue
+        heading = field.replace("_", " ").title()
+        sections.append(f"## {heading}\n{_format_shared_prompt_value(value)}")
+    if not sections:
+        return ""
+    return "# Shared Review Configuration\n" + "\n\n".join(sections)
+
+
+def _runtime_prompt_composition_context(config: Dict[str, str], agent_type: str) -> str:
+    raw = config.get(RUNTIME_PROMPT_COMPOSITION_FIELD, "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{RUNTIME_PROMPT_COMPOSITION_FIELD} must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{RUNTIME_PROMPT_COMPOSITION_FIELD} must be a JSON object.")
+
+    field = f"{agent_type}_runtime_instructions"
+    instructions = parsed.get(field, "")
+    if not instructions:
+        return ""
+    heading = field.replace("_", " ").title()
+    if isinstance(instructions, list):
+        rendered = "\n".join(f"- {item}" for item in instructions if str(item).strip())
+    elif isinstance(instructions, dict):
+        rendered = json.dumps(instructions, indent=2)
+    else:
+        rendered = str(instructions).strip()
+    if not rendered:
+        return ""
+    return f"# Runtime Prompt Composition\n## {heading}\n{rendered}"
+
+
+def _compose_agent_prompt(role_prompt: str, shared_context: str, runtime_context: str = "") -> str:
+    role_prompt = role_prompt.strip()
+    shared_context = shared_context.strip()
+    runtime_context = runtime_context.strip()
+    sections = [section for section in [shared_context, runtime_context] if section]
+    if not sections:
+        return role_prompt
+    if role_prompt:
+        sections.append(f"# Role-Specific Prompt\n{role_prompt}")
+    return "\n\n".join(sections)
+
+
+def _reviewer_config_context(spec: Dict[str, str]) -> str:
+    lines: List[str] = []
+    category = spec.get("category", "").strip()
+    if category:
+        lines.append(f"- Category: {category}")
+    activate_when = spec.get("activate_when", "").strip()
+    if activate_when:
+        lines.append(f"- Activate when: {activate_when}")
+    if not lines:
+        return ""
+    return "# Reviewer Configuration\n" + "\n".join(lines)
+
+
+def _build_configured_reviewer(
+    spec: Dict[str, str],
+    config: Dict[str, str],
+    retry_cfg: RetryConfig,
+    shared_context: str = "",
+    runtime_context: str = "",
+):
+    provider = spec["provider"]
+    name = spec.get("name", provider)
+    reviewer_context = _reviewer_config_context(spec)
+    role_prompt = "\n\n".join(
+        part for part in [reviewer_context, spec.get("prompt", spec.get("persona", "")).strip()] if part
+    )
+    persona_prompt = _compose_agent_prompt(role_prompt, shared_context, runtime_context)
+
+    if provider == "mock":
+        return MockAgent(name, persona_prompt)
+
+    api_key = _api_key_for_spec(spec, config)
+    if not api_key:
+        raise ValueError(f"Reviewer '{name}' is missing an API key.")
+
+    if provider in {"openai", "responses"}:
+        return OpenAIReviewer(
+            api_key,
+            spec.get("model", config["openai_model"]),
+            retry_cfg,
+            spec.get("base_url", config["openai_base_url"]),
+            name,
+            persona_prompt,
+        )
+    if provider == "anthropic":
+        return AnthropicReviewer(
+            api_key,
+            spec.get("model", config["anthropic_model"]),
+            retry_cfg,
+            spec.get("base_url", config["anthropic_base_url"]),
+            name,
+            persona_prompt,
+        )
+    if provider in {"grok", "openai_chat", "chat_completions"}:
+        return GrokReviewer(
+            api_key,
+            spec.get("model", config["grok_model"]),
+            retry_cfg,
+            spec.get("base_url", config["grok_base_url"]),
+            name,
+            persona_prompt,
+        )
+
+    raise ValueError(
+        f"Reviewer '{name}' uses unsupported provider '{provider}'. "
+        "Supported providers: mock, openai, responses, anthropic, grok, openai_chat, chat_completions."
+    )
+
+
+def _legacy_live_reviewer_specs(config: Dict[str, str]) -> List[Dict[str, str]]:
+    available_providers: List[tuple[str, str]] = []
+    if config["anthropic_api_key"]:
+        available_providers.append(("Claude", "anthropic"))
+    if config["openai_api_key"]:
+        available_providers.append(("OpenAI", "openai"))
+    if config["grok_api_key"]:
+        available_providers.append(("Grok", "grok"))
+
+    if not available_providers:
+        return []
+
+    return [
+        {
+            "name": f"{provider_label} {persona['name']}" if len(available_providers) == 1 else persona["name"],
+            "provider": provider,
+            "prompt": persona["prompt"],
+        }
+        for index, persona in enumerate(DEFAULT_REVIEWER_PERSONAS)
+        for provider_label, provider in [available_providers[index % len(available_providers)]]
+    ]
+
+
+def _default_arbitrator_spec(config: Dict[str, str]) -> Dict[str, str]:
+    if config["grok_api_key"]:
+        return {"name": "Arbitrator", "provider": "grok"}
+    if config["openai_api_key"]:
+        return {"name": "Arbitrator", "provider": "openai"}
+    if config["anthropic_api_key"]:
+        return {"name": "Arbitrator", "provider": "anthropic"}
+    return {"name": "Arbitrator", "provider": "mock"}
+
+
+def _build_configured_arbitrator(
+    spec: Dict[str, str],
+    config: Dict[str, str],
+    retry_cfg: RetryConfig,
+    shared_context: str = "",
+    runtime_context: str = "",
+):
+    provider = spec.get("provider", "mock")
+    name = spec.get("name", "Arbitrator")
+    prompt = _compose_agent_prompt(spec.get("prompt", spec.get("persona", "")), shared_context, runtime_context)
+
+    if provider == "mock":
+        return MockConsolidator(name, prompt)
+
+    api_key = _api_key_for_spec(spec, config)
+    if not api_key:
+        raise ValueError(f"Arbitrator '{name}' is missing an API key.")
+
+    model, base_url = _provider_defaults(provider, config)
+    model = spec.get("model", model)
+    base_url = spec.get("base_url", base_url)
+
+    if provider in {"openai", "responses"}:
+        return OpenAIConsolidator(api_key, model, retry_cfg, base_url, name, prompt)
+    if provider == "anthropic":
+        return AnthropicConsolidator(api_key, model, retry_cfg, base_url, name, prompt)
+    if provider in {"grok", "openai_chat", "chat_completions"}:
+        return GrokConsolidator(api_key, model, retry_cfg, base_url, name, prompt)
+
+    raise ValueError(
+        f"Arbitrator '{name}' uses unsupported provider '{provider}'. "
+        "Supported providers: mock, openai, responses, anthropic, grok, openai_chat, chat_completions."
+    )
+
+
 def _build_runtime_agents(config: Dict[str, str]):
     mode = config["agent_mode"].lower()
     allow_mock_fallback = _as_bool(config["allow_mock_fallback"])
@@ -417,47 +654,57 @@ def _build_runtime_agents(config: Dict[str, str]):
         backoff_seconds=float(config["http_backoff_seconds"]),
     )
 
-    has_live_keys = (
-        bool(config["openai_api_key"]) and bool(config["anthropic_api_key"]) and bool(config["grok_api_key"])
-    )
-    use_live = mode == "live" or (mode == "auto" and has_live_keys)
+    configured_specs = configured_reviewer_specs(config)
+    live_specs = configured_specs or _legacy_live_reviewer_specs(config)
+    use_live = mode == "live" or (mode == "auto" and live_specs)
+    arbitrator_spec = configured_arbitrator_spec(config)
+    shared_context = _shared_prompt_context(config)
+    reviewer_runtime_context = _runtime_prompt_composition_context(config, "reviewer")
+    arbitrator_runtime_context = _runtime_prompt_composition_context(config, "arbitrator")
 
     if use_live:
         try:
             reviewers = [
-                AnthropicReviewer(
-                    config["anthropic_api_key"],
-                    config["anthropic_model"],
-                    retry_cfg,
-                    config["anthropic_base_url"],
-                ),
-                OpenAIReviewer(
-                    config["openai_api_key"],
-                    config["openai_model"],
-                    retry_cfg,
-                    config["openai_base_url"],
-                ),
-                GrokReviewer(
-                    config["grok_api_key"],
-                    config["grok_model"],
-                    retry_cfg,
-                    config["grok_base_url"],
-                ),
+                _build_configured_reviewer(spec, config, retry_cfg, shared_context, reviewer_runtime_context)
+                for spec in live_specs
             ]
-            consolidator = OpenAIConsolidator(
-                config["openai_api_key"],
-                config["openai_model"],
+            if not reviewers:
+                raise ValueError("at least one reviewer must be configured.")
+            consolidator = _build_configured_arbitrator(
+                arbitrator_spec or _default_arbitrator_spec(config),
+                config,
                 retry_cfg,
-                config["openai_base_url"],
+                shared_context,
+                arbitrator_runtime_context,
             )
-            return reviewers, consolidator, "live"
+            return reviewers, consolidator, "configured" if configured_specs else "live"
         except Exception:
             if not allow_mock_fallback or mode == "live":
                 raise
 
-    reviewers = [MockAgent("Claude"), MockAgent("OpenAI"), MockAgent("Grok")]
-    consolidator = MockConsolidator()
+    mock_names = mock_reviewer_names(config)
+    if not mock_names:
+        mock_names = [persona["name"] for persona in DEFAULT_REVIEWER_PERSONAS]
+    reviewers = [MockAgent(name) for name in mock_names]
+    consolidator = _build_configured_arbitrator(
+        arbitrator_spec or {"name": "Arbitrator", "provider": "mock"},
+        config,
+        retry_cfg,
+        shared_context,
+        arbitrator_runtime_context,
+    )
     return reviewers, consolidator, "mock"
+
+
+def _review_artifact_name(reviewer_name: str, used_names: set[str]) -> str:
+    base = slugify(reviewer_name) or "reviewer"
+    candidate = f"{base}_review.md"
+    counter = 2
+    while candidate in used_names:
+        candidate = f"{base}_{counter}_review.md"
+        counter += 1
+    used_names.add(candidate)
+    return candidate
 
 
 def _run_review_iterations(
@@ -472,8 +719,9 @@ def _run_review_iterations(
     ask_review_clarifications: bool,
     review_context_md: str = "",
     review_context_artifact: Path | None = None,
+    config_file: Path | None = None,
 ) -> Path:
-    config = env_config()
+    config = env_config(config_file=config_file)
     reviewers, consolidator, runtime_mode = _build_runtime_agents(config)
     reviewer_names = [r.name for r in reviewers]
     manifest: Dict[str, object] = {
@@ -484,6 +732,7 @@ def _run_review_iterations(
         "iterations": iterations,
         "agent_mode": runtime_mode,
         "reviewers": reviewer_names,
+        "arbitrator": getattr(consolidator, "name", "Arbitrator"),
         "artifacts": {"initial_plan": str(initial_artifact)},
     }
     if review_context_artifact is not None:
@@ -505,6 +754,7 @@ def _run_review_iterations(
             "review_clarifications": {},
             "consolidated_plan": "",
         }
+        review_artifact_names: set[str] = set()
         for reviewer in reviewers:
             try:
                 review_input = current_plan
@@ -521,7 +771,7 @@ def _run_review_iterations(
                     "## Error\n"
                     f"- Reviewer failed: {exc}\n"
                 )
-            review_path = iter_dir / f"{reviewer.name.lower()}_review.md"
+            review_path = iter_dir / _review_artifact_name(reviewer.name, review_artifact_names)
             write_text(review_path, review_text)
             results.append(AgentResult(reviewer.name, review_text))
             cast_reviews = iter_manifest["reviews"]
@@ -593,7 +843,7 @@ def _run_review_iterations(
     return final_path
 
 
-def run(idea: str, iterations: int, output_root: Path) -> Path:
+def run(idea: str, iterations: int, output_root: Path, config_file: Path | None = None) -> Path:
     answers: Dict[str, str] = {}
     print("Answer clarifying questions before the plan is generated.")
     for q in generate_questions(idea):
@@ -627,10 +877,11 @@ def run(idea: str, iterations: int, output_root: Path) -> Path:
         workflow="idea-to-plan-with-architect-review",
         initial_artifact=initial_plan_path,
         ask_review_clarifications=True,
+        config_file=config_file,
     )
 
 
-def run_plan_review(plan_path: Path, iterations: int, output_root: Path) -> Path:
+def run_plan_review(plan_path: Path, iterations: int, output_root: Path, config_file: Path | None = None) -> Path:
     if not plan_path.exists():
         raise SystemExit(f"Plan file does not exist: {plan_path}")
 
@@ -664,15 +915,29 @@ def run_plan_review(plan_path: Path, iterations: int, output_root: Path) -> Path
         ask_review_clarifications=False,
         review_context_md=version_context,
         review_context_artifact=version_context_path,
+        config_file=config_file,
     )
 
 
 def parse_args() -> argparse.Namespace:
-    cfg = env_config()
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_source = pre_parser.add_mutually_exclusive_group()
+    pre_source.add_argument("--idea")
+    pre_source.add_argument("--plan-file")
+    pre_parser.add_argument("--config")
+    pre_args, _remaining = pre_parser.parse_known_args()
+    workflow = "existing-plan" if pre_args.plan_file else "new-idea"
+    config_file = Path(pre_args.config) if pre_args.config else default_config_path(workflow)
+    cfg = env_config(workflow=workflow, config_file=config_file)
+
     parser = argparse.ArgumentParser(description="Implementation plan generator and inspector.")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--idea", help="High-level product or feature idea.")
     source.add_argument("--plan-file", help="Existing implementation plan markdown file to critique as software architects.")
+    parser.add_argument(
+        "--config",
+        help="Optional config file. Defaults to inspector.new-idea.config.json for --idea and inspector.existing-plan.config.json for --plan-file when present.",
+    )
     parser.add_argument(
         "--iterations",
         type=int,
@@ -684,7 +949,9 @@ def parse_args() -> argparse.Namespace:
         default=cfg["output_dir"],
         help="Output root directory for generated markdown artifacts.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.config_file = config_file
+    return args
 
 
 def main() -> None:
@@ -693,9 +960,9 @@ def main() -> None:
     if args.iterations < 1:
         raise SystemExit("--iterations must be >= 1")
     if args.plan_file:
-        run_plan_review(Path(args.plan_file), args.iterations, Path(args.output))
+        run_plan_review(Path(args.plan_file), args.iterations, Path(args.output), args.config_file)
     else:
-        run(args.idea, args.iterations, Path(args.output))
+        run(args.idea, args.iterations, Path(args.output), args.config_file)
 
 
 if __name__ == "__main__":

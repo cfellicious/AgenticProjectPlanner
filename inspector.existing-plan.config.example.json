@@ -1,0 +1,325 @@
+{
+"agent_mode": "live",
+"allow_mock_fallback": false,
+
+"document_goal": "Generate an implementation-ready engineering plan from a product or feature idea. The final output must be suitable for direct engineering execution, not just high-level critique.",
+
+"global_instruction": "The user wants a practical implementation plan for a general software product. Prefer concrete engineering tasks, dependencies, database/API/frontend/backend implications, edge cases, security/privacy risks, observability, rollout, rollback, and acceptance criteria. Avoid generic advice. If requirements are unclear, make reasonable assumptions and list them explicitly instead of stopping the plan.",
+
+"default_reviewers_policy": {
+"description": "Default reviewers should cover general software implementation risks without becoming domain-specific. Optional specialist reviewers may be activated when the product idea needs deeper review in that area.",
+"runtime_rule": "Only execute reviewers where active is true. Skip reviewers where active is false. The arbitrator should only reconcile outputs from active reviewers."
+},
+
+"input_expectation": {
+"idea_description": "Required. The product idea, feature request, or implementation concept to evaluate.",
+"current_system_context": "Optional but recommended. Existing architecture, stack, database, APIs, frontend, deployment, or known constraints.",
+"constraints": "Optional. Budget, timeline, team size, deployment restrictions, compliance needs, or technology constraints.",
+"desired_mvp_scope": "Optional. What should be included in the first shippable version.",
+"non_goals": "Optional. What should explicitly not be included in the implementation plan."
+},
+
+"severity_scale": {
+"Blocker": "Must be resolved before implementation can safely begin or before the plan can be considered buildable.",
+"High": "Must be addressed before production launch.",
+"Medium": "Important and should be planned, but can be phased if needed.",
+"Low": "Useful improvement, polish, or optimization.",
+"Watchlist": "Not immediately actionable, but should be monitored or revisited later."
+},
+
+"reviewer_output_contract": {
+"required_format": "structured_markdown",
+"required_sections": [
+"Role Summary",
+"Critical Blockers",
+"High Risks",
+"Medium Risks",
+"Low Risks",
+"Watchlist",
+"Missing Requirements",
+"Implementation Recommendations",
+"Test Requirements",
+"Acceptance Criteria",
+"Open Questions",
+"Effort Impact",
+"Confidence"
+],
+"concern_format": {
+"severity": "Blocker | High | Medium | Low | Watchlist",
+"issue": "Describe the concern clearly.",
+"why_it_matters": "Explain the practical impact.",
+"recommended_fix": "Give a concrete mitigation or implementation change.",
+"affected_area": "product | frontend | backend | database | api | infra | security | ux | delivery | testing | operations | support | compliance | performance | ai_ml | billing",
+"validation_needed": "Describe the test, review, metric, or acceptance check needed."
+},
+"rules": [
+"Avoid generic advice.",
+"Prefer implementation-level feedback.",
+"Do not only critique; suggest buildable fixes.",
+"Separate blockers from improvements.",
+"State assumptions explicitly.",
+"If a concern affects timeline or staffing, mention the effort impact.",
+"Do not invent requirements that are unrelated to the product idea.",
+"If the idea does not need your specialty area, say so briefly and focus only on relevant risks."
+]
+},
+
+"final_output_contract": {
+"format": "markdown",
+"style": "implementation_ready",
+"must_include": [
+"Executive Summary",
+"Final Scope",
+"Non-Goals",
+"Assumptions",
+"Recommended Architecture",
+"Data Model and Schema Changes",
+"API Design",
+"Frontend Implementation Plan",
+"Backend Implementation Plan",
+"Security and Privacy Requirements",
+"UX Requirements",
+"Edge Cases",
+"Performance Considerations",
+"Observability and Logging",
+"Testing Strategy",
+"Rollout Plan",
+"Rollback Plan",
+"Implementation Sequence",
+"Engineering Effort Estimate",
+"Staffing Recommendation",
+"Acceptance Criteria",
+"Launch Gates",
+"Open Concerns",
+"MVP Cut Line",
+"Future Enhancements"
+],
+"rules": [
+"The final plan must be directly usable by an engineering team.",
+"Merge duplicate concerns from active reviewers.",
+"Resolve contradictions explicitly.",
+"Preserve justified dissent under Open Concerns.",
+"Every major concern from active reviewers must either be incorporated into the implementation plan or explicitly listed under Open Concerns with a reason.",
+"Use concrete tasks, dependencies, validation steps, and engineering decisions.",
+"Include man-day estimates with assumptions.",
+"Include security, UX, DevOps, full-stack, staffing, performance, observability, rollback, and testing requirements when relevant.",
+"Avoid vague phrases such as 'ensure scalability' unless followed by a concrete implementation or validation step.",
+"Do not mention inactive reviewers in the final output unless their absence creates an obvious planning limitation."
+]
+},
+
+"runtime_prompt_composition": {
+"reviewer_prompt_order": [
+"document_goal",
+"global_instruction",
+"severity_scale",
+"reviewer_output_contract",
+"user_input",
+"reviewer.name",
+"reviewer.category",
+"reviewer.prompt"
+],
+"arbitrator_prompt_order": [
+"document_goal",
+"global_instruction",
+"severity_scale",
+"final_output_contract",
+"user_input",
+"active_reviewer_outputs",
+"arbitrator.prompt"
+],
+"rules": [
+"Only run reviewers where active is true.",
+"Do not run reviewers where active is false.",
+"Do not pass inactive reviewer prompts to the arbitrator.",
+"Reviewer agents should receive the reviewer_output_contract.",
+"The arbitrator should receive the final_output_contract.",
+"Shared contracts should be prepended before role-specific prompts.",
+"The runtime should not duplicate shared contracts inside reviewer-specific prompts.",
+"The arbitrator should only reconcile outputs from active reviewers."
+]
+},
+
+"reviewers": [
+{
+"name": "Product Analyst",
+"category": "default",
+"active": true,
+"provider": "openai",
+"model": "gpt-5.4",
+"api_key_env": "OPENAI_API_KEY",
+"prompt": "Focus on product value, user roles, real-world workflows, MVP scope, non-goals, confusing requirements, user incentives, adoption friction, failure cases, and whether the feature solves the intended problem without unnecessary complexity."
+},
+{
+"name": "Software Architect",
+"category": "default",
+"active": true,
+"provider": "anthropic",
+"model": "claude-3-5-haiku-20241022",
+"api_key_env": "ANTHROPIC_API_KEY",
+"prompt": "Focus on architecture, service boundaries, data ownership, schema direction, integration boundaries, operational readiness, dependency direction, failure isolation, extensibility, and whether the implementation order reduces technical risk."
+},
+{
+"name": "Data Engineer",
+"category": "optional",
+"active": false,
+"activate_when": "Use for complex data pipelines, analytics, imports/exports, reporting, event streams, lifecycle management, auditability, or cross-system data ownership.",
+"provider": "openai",
+"model": "gpt-5.4",
+"api_key_env": "OPENAI_API_KEY",
+"prompt": "Focus on data modeling, schema design, migrations, indexes, query performance, transaction boundaries, data ownership, lifecycle management, auditability, backup/restore implications, import/export needs, reporting needs, and whether the proposed data flow supports reliable product operation."
+},
+{
+  "name": "Database Engineer",
+  "category": "default",
+  "active": true,
+  "provider": "openai",
+  "model": "gpt-5.4",
+  "api_key_env": "OPENAI_API_KEY",
+  "prompt": "Focus on database design, schema modeling, normalization/denormalization tradeoffs, migrations, indexes, constraints, foreign keys, transactions, isolation levels, query performance, pagination, locking, concurrency issues, soft deletes, audit tables, backup/restore, data retention, reporting queries, and whether the database design supports reliable product operation."
+},
+{
+"name": "Security Analyst",
+"category": "default",
+"active": true,
+"provider": "anthropic",
+"model": "claude-3-5-haiku-20241022",
+"api_key_env": "ANTHROPIC_API_KEY",
+"prompt": "Focus on authentication, authorization, object-level access control, IDOR/BOLA, privacy, retention, auditability, abuse cases, sensitive data exposure, rate limiting, tenant isolation, secure defaults, secret handling, and security-specific tests."
+},
+{
+"name": "UI/UX Analyst",
+"category": "default",
+"active": true,
+"provider": "openai",
+"model": "gpt-5.4",
+"api_key_env": "OPENAI_API_KEY",
+"prompt": "Focus on user journeys, information architecture, accessibility, empty/loading/error states, interaction clarity, onboarding, mobile/desktop usability, form validation, user recovery paths, and whether the plan includes enough UX validation."
+},
+{
+"name": "Full Stack Engineer",
+"category": "default",
+"active": true,
+"provider": "openai",
+"model": "gpt-5.4",
+"api_key_env": "OPENAI_API_KEY",
+"prompt": "Focus on implementation feasibility across frontend, backend, APIs, data flow, validation, error handling, state management, integration seams, code organization, database transactions, migrations, background jobs, and whether the plan is practical for engineers to build."
+},
+{
+"name": "QA/Test Engineer",
+"category": "default",
+"active": true,
+"provider": "openai",
+"model": "gpt-5.4",
+"api_key_env": "OPENAI_API_KEY",
+"prompt": "Focus on testability, unit tests, integration tests, API tests, frontend flow tests, regression risks, test data, edge cases, negative tests, concurrency tests, security test cases, accessibility checks, performance tests, and acceptance-test coverage."
+},
+{
+"name": "DevOps Engineer",
+"category": "default",
+"active": true,
+"provider": "grok",
+"model": "grok-3",
+"api_key_env": "GROK_API_KEY",
+"prompt": "Focus on infrastructure, deployment topology, CI/CD, environments, secrets management, configuration management, observability, incident response, backup/restore, scalability, release safety, rollback operations, operational runbooks, and production readiness."
+},
+{
+"name": "Delivery Manager",
+"category": "default",
+"active": true,
+"provider": "openai",
+"model": "gpt-5.4",
+"api_key_env": "OPENAI_API_KEY",
+"prompt": "Focus on delivery sequencing, acceptance criteria, dependency management, test strategy, rollback, degraded mode, performance targets, observability, release safety, launch gates, unresolved product decisions, and whether the implementation order is realistic."
+},
+{
+"name": "Team Lead",
+"category": "default",
+"active": true,
+"provider": "openai",
+"model": "gpt-5.4",
+"api_key_env": "OPENAI_API_KEY",
+"prompt": "Focus on translating requirements into an implementation team plan. Estimate engineering effort in man-days, identify required roles and staffing levels, sequence work by dependency, call out assumptions behind estimates, and flag scope that materially changes timeline or team composition."
+},
+
+{
+  "name": "Performance Engineer",
+  "category": "optional",
+  "active": false,
+  "activate_when": "Use for high concurrency, heavy queries, media processing, background jobs, exports, analytics, strict latency requirements, or expensive third-party/AI calls.",
+  "provider": "openai",
+  "model": "gpt-5.4",
+  "api_key_env": "OPENAI_API_KEY",
+  "prompt": "Focus on latency, throughput, concurrency, database load, caching, queueing, background jobs, rate limits, bottlenecks, resource usage, degradation behavior, load testing, and whether the implementation can handle realistic production traffic."
+},
+{
+  "name": "API Contract Reviewer",
+  "category": "optional",
+  "active": false,
+  "activate_when": "Use for multiple clients, public APIs, mobile apps, third-party integrations, complex frontend/backend handoff, versioning, or many endpoints.",
+  "provider": "openai",
+  "model": "gpt-5.4",
+  "api_key_env": "OPENAI_API_KEY",
+  "prompt": "Focus on API contract quality, endpoint structure, request and response DTOs, validation rules, error response consistency, pagination, filtering, sorting, idempotency, versioning, backward compatibility, frontend/backend integration seams, and whether the API is clear enough for independent frontend and backend implementation."
+},
+{
+  "name": "Privacy and Compliance Reviewer",
+  "category": "optional",
+  "active": false,
+  "activate_when": "Use for sensitive data, minors, health, finance, education, identity, legal records, regulated domains, audit requirements, or strict retention/deletion needs.",
+  "provider": "openai",
+  "model": "gpt-5.4",
+  "api_key_env": "OPENAI_API_KEY",
+  "prompt": "Focus on privacy, consent, data minimization, retention, deletion, export, auditability, access boundaries, sensitive data handling, data subject requests, compliance-sensitive workflows, and whether the implementation plan contains enough controls for responsible data handling."
+},
+{
+  "name": "Billing and Finance Reviewer",
+  "category": "optional",
+  "active": false,
+  "activate_when": "Use for payments, subscriptions, refunds, invoices, credits, coupons, commissions, taxation, revenue recognition, or financial reconciliation.",
+  "provider": "openai",
+  "model": "gpt-5.4",
+  "api_key_env": "OPENAI_API_KEY",
+  "prompt": "Focus on payment flows, subscriptions, invoices, refunds, credits, coupons, commissions, taxation implications, reconciliation, payment failure handling, ledger consistency, auditability, and support workflows for billing issues."
+},
+{
+  "name": "AI/ML Reviewer",
+  "category": "optional",
+  "active": false,
+  "activate_when": "Use for LLMs, recommendation systems, classification, scoring, ranking, embeddings, RAG, automated decision-making, model evaluation, or AI safety concerns.",
+  "provider": "openai",
+  "model": "gpt-5.4",
+  "api_key_env": "OPENAI_API_KEY",
+  "prompt": "Focus on model behavior, data quality, evaluation, prompt reliability, hallucination risk, bias, explainability, fallback behavior, human review, monitoring, drift, cost controls, latency, safety boundaries, and whether AI/ML outputs are validated before affecting users."
+},
+{
+  "name": "Support Operations Reviewer",
+  "category": "optional",
+  "active": false,
+  "activate_when": "Use for production support workflows, admin recovery tools, customer support dashboards, incident workflows, manual overrides, or user-facing failure recovery.",
+  "provider": "openai",
+  "model": "gpt-5.4",
+  "api_key_env": "OPENAI_API_KEY",
+  "prompt": "Focus on post-launch supportability, admin recovery tools, audit views, manual overrides, user complaint handling, failed-job recovery, resend flows, operational dashboards, support diagnostics, incident response, and whether non-engineers can understand and recover common failure cases."
+},
+{
+  "name": "Legal Risk Reviewer",
+  "category": "optional",
+  "active": false,
+  "activate_when": "Use for terms of service, user-generated content, regulated domains, marketplace liability, intellectual property, contracts, public claims, or legal exposure. This reviewer should identify product/legal risk areas but must not provide formal legal advice.",
+  "provider": "openai",
+  "model": "gpt-5.4",
+  "api_key_env": "OPENAI_API_KEY",
+  "prompt": "Focus on legal risk areas, terms of service implications, user-generated content risk, intellectual property concerns, marketplace/platform liability, public claims, consent language, dispute handling, and areas where professional legal review may be required. Do not provide formal legal advice."
+}
+],
+
+"arbitrator": {
+"name": "Arbitrator",
+"active": true,
+"provider": "grok",
+"model": "grok-3",
+"api_key_env": "GROK_API_KEY",
+"prompt": "Reconcile the active reviewer critiques into one implementation plan suitable for direct engineering execution. The final document must be concrete, sequenced, and implementation-ready. Merge duplicate concerns, resolve contradictions explicitly, and preserve justified dissent under Open Concerns. Do not drop relevant security, privacy, UX, DevOps, full-stack implementation, data, staffing, man-day estimates, performance, observability, rollback, or test requirements. Convert reviewer feedback into the final output contract structure. Every major concern from active reviewers must either be incorporated into the plan or explicitly listed under Open Concerns with a reason. Avoid generic recommendations. Prefer concrete tasks, dependencies, validation steps, and engineering decisions. If information is missing, make reasonable assumptions and list them explicitly."
+}
+}

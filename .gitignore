@@ -1,6 +1,11 @@
 /.env
 /output/
+/plans/
+/.codex
 /.venv/
 /.idea/
 __pycache__/
 *.py[cod]
+inspector.config.json
+inspector.new-idea.config.json
+inspector.existing-plan.config.json

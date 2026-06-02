@@ -7,14 +7,14 @@ Turn a raw product idea into an actionable implementation plan, or critique an e
 The project supports two workflows:
 
 1. **Idea-to-plan workflow**: turn a raw product idea into a structured implementation plan, then harden it through reviewer-agent critique.
-2. **Existing-plan architect critique workflow**: take an implementation plan markdown file and have Claude, OpenAI, and Grok behave as senior software architects who critique architecture, performance, security, edge cases, and testing gaps. The arbitrator produces the revised final document.
+2. **Existing-plan architect critique workflow**: take an implementation plan markdown file and have configurable reviewer agents behave as senior software architects who critique architecture, performance, security, edge cases, and testing gaps. The arbitrator produces the revised final document.
 
 The idea-to-plan workflow:
 
 1. **Discovery**: ask clarifying questions that expand the user's idea into concrete product intent.
 2. **Readiness**: classify missing information as either user-owned product decisions or agent-filled engineering defaults.
 3. **Planning**: generate a markdown implementation plan with architecture, schema, risks, security, tests, performance, delivery, future concerns, and open issues.
-4. **Architect Review**: run multiple reviewer agents (Claude/OpenAI/Grok) to critique the plan from a software-architect viewpoint.
+4. **Architect Review**: run seven configured reviewer agents to critique the plan from different product, engineering, implementation, staffing, and operations viewpoints.
 5. **Review-driven clarification**: convert reviewer comments that require user-owned product decisions into concrete user questions before consolidation.
 6. **Arbitration/Consolidation**: merge review feedback and user clarifications into an improved plan and repeat for configurable iterations.
 
@@ -80,7 +80,7 @@ If you already have an implementation plan, skip discovery and planning:
 python3 src/inspector.py --plan-file plans/implementation-plan-inspector-plan.md --iterations 2
 ```
 
-This workflow copies the source markdown to `initial_plan.md`, runs Claude/OpenAI/Grok reviewer agents as senior software architects, then asks the arbitrator to produce the final revised plan.
+This workflow copies the source markdown to `initial_plan.md`, runs configured reviewer agents as senior software architects, then asks the arbitrator to produce the final revised plan.
 
 When the source plan or filename includes a version such as `v1.1`, `v.0.9.1`, or `Version: 1.1`, the workflow also searches related plan directories for markdown files with the same version or matching topic tokens. It writes:
 
@@ -139,9 +139,13 @@ python3 src/inspector.py --plan-file plans/implementation-plan-inspector-plan.md
 Runs create a timestamped folder under `output/`:
 
 - `initial_plan.md`
-- `iteration_01/claude_review.md`
-- `iteration_01/openai_review.md`
-- `iteration_01/grok_review.md`
+- `iteration_01/software-architect_review.md`
+- `iteration_01/security-analyst_review.md`
+- `iteration_01/delivery-manager_review.md`
+- `iteration_01/ui-ux-analyst_review.md`
+- `iteration_01/devops-engineer_review.md`
+- `iteration_01/full-stack-engineer_review.md`
+- `iteration_01/team-lead_review.md`
 - `iteration_01/user_review_clarifications.md`
 - `iteration_01/consolidated_plan.md`
 - `related_version_context.md` for existing-plan architect critique runs
@@ -154,5 +158,15 @@ Existing-plan architect critique runs use the same artifact names and add `_arch
 ## Notes
 
 - By default this project uses built-in deterministic mock agents so it runs without API keys.
+- The runtime supports any non-empty reviewer list plus one arbitrator.
+- Prefer workflow-specific config files for agent setup. Start from `inspector.new-idea.config.example.json` for `--idea` and `inspector.existing-plan.config.example.json` for `--plan-file`.
+- The CLI automatically uses `inspector.new-idea.config.json` for new ideas and `inspector.existing-plan.config.json` for existing-plan critique when those files exist. Use `--config` or `INSPECTOR_CONFIG_FILE` to override.
+- The examples demonstrate a seven-reviewer default stack: Software Architect and Security Analyst backed by Claude, Delivery Manager, UI/UX Analyst, Full Stack Engineer, and Team Lead backed by OpenAI, DevOps Engineer backed by Grok, and an Arbitrator backed by Grok.
+- `reviewers` and `arbitrator` support `mock`, `openai`/`responses`, `anthropic`, and OpenAI-compatible chat providers via `grok`, `openai_chat`, or `chat_completions`.
+- Reviewer entries can include `category` metadata and `active`. Reviewers with `active: false` are skipped; missing `active` defaults to enabled for backward compatibility.
+- Each reviewer and the arbitrator can include a `prompt` field. Keep this role-specific; shared contracts and repeated instructions belong at the top level. This lets one provider key run multiple distinct personas, for example Software Architect, Security Analyst, Delivery Manager, UI/UX Analyst, DevOps Engineer, Full Stack Engineer, and Team Lead.
+- Shared top-level config fields such as `document_goal`, `global_instruction`, `input_expectation`, `severity_scale`, `reviewer_output_contract`, and `final_output_contract` are automatically injected into every reviewer and arbitrator prompt before the role-specific prompt.
+- `runtime_prompt_composition` defines common reviewer and arbitrator instructions that the runtime injects during prompt assembly, so repeated instructions do not need to be copied into each reviewer prompt.
+- If only one live provider key is available and `INSPECTOR_REVIEWERS` is not set, the CLI automatically creates the standard reviewers from that provider.
 - Live provider-backed reviewers can be enabled with API keys and `INSPECTOR_AGENT_MODE=live`.
 - Reviewer agents act as software architects. They check whether the plan follows from discovered user intent when available, then challenge architecture, risks, performance requirements, security flaws, edge cases, missing acceptance criteria, weak security controls, vague future concerns, and implementation gaps.
