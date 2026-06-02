@@ -77,7 +77,7 @@ Those answers are appended to the current plan as authoritative context so the c
 If you already have an implementation plan, skip discovery and planning:
 
 ```bash
-python3 inspector.py --plan-file plans/implementation-plan-inspector-plan.md --iterations 2
+python3 src/inspector.py --plan-file plans/implementation-plan-inspector-plan.md --iterations 2
 ```
 
 This workflow copies the source markdown to `initial_plan.md`, runs Claude/OpenAI/Grok reviewer agents as senior software architects, then asks the arbitrator to produce the final revised plan.
@@ -125,13 +125,13 @@ The final deliverable is an implementation plan. It must include:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 inspector.py --idea "A B2B billing platform for freelancers" --iterations 2
+python3 src/inspector.py --idea "A B2B billing platform for freelancers" --iterations 2
 ```
 
 Critique an existing implementation plan:
 
 ```bash
-python3 inspector.py --plan-file plans/implementation-plan-inspector-plan.md --iterations 2
+python3 src/inspector.py --plan-file plans/implementation-plan-inspector-plan.md --iterations 2
 ```
 
 ## Output structure
