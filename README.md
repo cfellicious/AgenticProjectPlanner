@@ -2,6 +2,26 @@
 
 Turn a raw product idea or research topic into an actionable implementation plan, or critique an existing implementation plan through software-architect reviewer agents.
 
+## Quick start
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 src/inspector.py --idea "A B2B billing platform for freelancers" --iterations 2
+```
+
+Critique an existing implementation plan:
+
+```bash
+python3 src/inspector.py --plan-file plans/implementation-plan-inspector-plan.md --iterations 2
+```
+
+Start from a research topic or product hypothesis:
+
+```bash
+python3 src/inspector.py --research "Research whether a privacy-first photo sharing app is viable" --iterations 2
+```
+
 ## What it does
 
 The project supports three workflows:
@@ -124,26 +144,6 @@ The final deliverable is an implementation plan. It must include:
 - Software concerns including hosting, observability, security, privacy, CI/CD, and rollback.
 - Framework/language recommendation when the user has no hard constraint.
 - Database recommendation for new products, including ownership boundaries, constraints, indexes, and migration strategy.
-
-## Quick start
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 src/inspector.py --idea "A B2B billing platform for freelancers" --iterations 2
-```
-
-Critique an existing implementation plan:
-
-```bash
-python3 src/inspector.py --plan-file plans/implementation-plan-inspector-plan.md --iterations 2
-```
-
-Start from a research topic or product hypothesis:
-
-```bash
-python3 src/inspector.py --research "Research whether a privacy-first photo sharing app is viable" --iterations 2
-```
 
 ## Output structure
 

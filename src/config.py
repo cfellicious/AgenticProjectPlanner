@@ -22,6 +22,7 @@ RUNTIME_PROMPT_COMPOSITION_FIELD = "runtime_prompt_composition"
 WORKFLOW_CONFIG_FILES = {
     "new-idea": "inspector.new-idea.config.json",
     "existing-plan": "inspector.existing-plan.config.json",
+    "research": "inspector.research.config.json",
 }
 
 
@@ -100,6 +101,7 @@ def env_config(workflow: str | None = None, config_file: str | Path | None = Non
         "default_iterations": _string_config_value(file_config.get("default_iterations", "2")),
         "reviewers": _string_config_value(file_config.get("reviewers", "")),
         "arbitrator": _string_config_value(file_config.get("arbitrator", "")),
+        "research_question_planner": _string_config_value(file_config.get("research_question_planner", "")),
         "mock_reviewers": _string_config_value(file_config.get("mock_reviewers", DEFAULT_MOCK_REVIEWERS)),
         "openai_api_key": _string_config_value(file_config.get("openai_api_key", "")),
         "openai_base_url": _string_config_value(file_config.get("openai_base_url", "https://api.openai.com/v1")),
@@ -124,6 +126,7 @@ def env_config(workflow: str | None = None, config_file: str | Path | None = Non
         "default_iterations": os.getenv("INSPECTOR_DEFAULT_ITERATIONS"),
         "reviewers": os.getenv("INSPECTOR_REVIEWERS"),
         "arbitrator": os.getenv("INSPECTOR_ARBITRATOR"),
+        "research_question_planner": os.getenv("INSPECTOR_RESEARCH_QUESTION_PLANNER"),
         "mock_reviewers": os.getenv("INSPECTOR_MOCK_REVIEWERS"),
         "openai_api_key": os.getenv("OPENAI_API_KEY"),
         "openai_base_url": os.getenv("OPENAI_BASE_URL"),
