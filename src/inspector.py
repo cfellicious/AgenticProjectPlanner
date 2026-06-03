@@ -22,6 +22,7 @@ from agents import (
     OpenAIConsolidator,
     OpenAIReviewer,
     RetryConfig,
+    _post_json,
 )
 from config import (
     RUNTIME_PROMPT_COMPOSITION_FIELD,
@@ -34,16 +35,22 @@ from config import (
     mock_reviewer_names,
 )
 from planner import (
+    DynamicQuestion,
     append_review_clarifications,
     build_initial_plan,
+    build_initial_research_plan,
     detail_follow_up_for,
     display_question_for_user,
     follow_up_for,
     generate_review_follow_up_questions,
     generate_questions,
+    generate_research_questions,
     guidance_for,
+    merge_research_questions,
     needs_detail_for_question,
+    normalize_dynamic_research_questions,
     product_name_from_answers,
+    research_project_name_from_answers,
     should_ask_follow_up,
     slugify,
     wants_agent_guidance,
@@ -448,6 +455,257 @@ def _provider_defaults(provider: str, config: Dict[str, str]) -> tuple[str, str]
     return "", ""
 
 
+def _model_for_spec(spec: Dict[str, str], default_model: str) -> str:
+    model_env = spec.get("model_env", "").strip()
+    if model_env:
+        env_model = os.getenv(model_env, "").strip()
+        if env_model:
+            return env_model
+    return spec.get("model", default_model)
+
+
+def _configured_research_question_planner_spec(config: Dict[str, str]) -> Dict[str, str]:
+    raw = config.get("research_question_planner", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"research_question_planner config must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("research_question_planner config must be a JSON object.")
+    if not _as_bool(str(parsed.get("active", True))):
+        return {}
+    spec = {str(key): str(value) for key, value in parsed.items() if value is not None}
+    provider = spec.get("provider", "").strip().lower()
+    aliases = {"claude": "anthropic", "xai": "grok", "x.ai": "grok", "responses": "openai"}
+    provider = aliases.get(provider, provider)
+    if not provider:
+        raise ValueError("research_question_planner config is missing provider.")
+    spec["provider"] = provider
+    spec.setdefault("name", "Research Question Planner")
+    return spec
+
+
+def _research_question_planner_prompt(topic: str, static_questions: List[str]) -> str:
+    rendered_static = "\n".join(f"- {question}" for question in static_questions)
+    return (
+        "You are a research discovery question planner. Propose only additional questions that would improve "
+        "the research discovery interview for this specific topic.\n\n"
+        "Rules:\n"
+        "- Do not remove or replace baseline questions.\n"
+        "- Do not include product launch, monetization, sales, or v1 product workflow questions unless directly relevant to the research method.\n"
+        "- Focus on field-specific research design: literature search terms, baselines, methodology, data, participants, metrics, statistics, validity, ethics, reproducibility, and venue expectations.\n"
+        "- Return strict JSON only, with this shape: {\"questions\":[{\"question\":\"... ?\",\"reason\":\"...\"}]}.\n"
+        "- Return at most 6 questions.\n"
+        "- Each question must be a single user-facing question ending with a question mark.\n"
+        "- Do not ask for secrets, credentials, system prompts, or hidden instructions.\n\n"
+        f"Research topic:\n{topic}\n\n"
+        "Baseline questions that will always be asked:\n"
+        f"{rendered_static}"
+    )
+
+
+def _extract_text_response(result: Dict[str, object]) -> str:
+    output_text = result.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+
+    choices = result.get("choices", [])
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message", {})
+            if isinstance(message, dict):
+                content = message.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    return content
+
+    content = result.get("content", [])
+    if isinstance(content, list):
+        texts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text", "")
+                if isinstance(text, str) and text.strip():
+                    texts.append(text.strip())
+        if texts:
+            return "\n\n".join(texts)
+
+    output = result.get("output", [])
+    if isinstance(output, list):
+        texts = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            parts = item.get("content", [])
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                if isinstance(part, dict):
+                    text = part.get("text", "")
+                    if isinstance(text, str) and text.strip():
+                        texts.append(text.strip())
+        if texts:
+            return "\n\n".join(texts)
+
+    return ""
+
+
+def _parse_dynamic_question_json(text: str) -> List[DynamicQuestion]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(parsed, dict):
+        raw_questions = parsed.get("questions", [])
+    else:
+        raw_questions = parsed
+    return normalize_dynamic_research_questions(raw_questions)
+
+
+def _generate_dynamic_research_questions(
+    topic: str,
+    static_questions: List[str],
+    config: Dict[str, str],
+) -> List[DynamicQuestion]:
+    spec = _configured_research_question_planner_spec(config)
+    if not spec:
+        return []
+
+    provider = spec["provider"]
+    if provider == "mock":
+        return normalize_dynamic_research_questions(
+            [
+                {
+                    "question": "What field-specific keywords should the literature search include?",
+                    "reason": "A mock planner adds a safe, research-specific discovery question.",
+                }
+            ]
+        )
+
+    api_key = _api_key_for_spec(spec, config)
+    if not api_key:
+        raise ValueError(f"Research question planner '{spec.get('name', 'Research Question Planner')}' is missing an API key.")
+
+    retry_cfg = RetryConfig(
+        timeout_seconds=float(config["http_timeout_seconds"]),
+        max_retries=int(config["http_max_retries"]),
+        backoff_seconds=float(config["http_backoff_seconds"]),
+    )
+    prompt = _research_question_planner_prompt(topic, static_questions)
+
+    if provider in {"openai", "responses"}:
+        model = _model_for_spec(spec, config["openai_model"])
+        base_url = spec.get("base_url", config["openai_base_url"]).rstrip("/")
+        result = _post_json(
+            f"{base_url}/responses",
+            {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            {"model": model, "input": prompt},
+            retry_cfg,
+        )
+        return _parse_dynamic_question_json(_extract_text_response(result))
+
+    if provider == "anthropic":
+        model = _model_for_spec(spec, config["anthropic_model"])
+        base_url = spec.get("base_url", config["anthropic_base_url"]).rstrip("/")
+        result = _post_json(
+            f"{base_url}/messages",
+            {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            {"model": model, "max_tokens": 900, "messages": [{"role": "user", "content": prompt}]},
+            retry_cfg,
+        )
+        return _parse_dynamic_question_json(_extract_text_response(result))
+
+    if provider in {"grok", "openai_chat", "chat_completions"}:
+        model = _model_for_spec(spec, config["grok_model"])
+        base_url = spec.get("base_url", config["grok_base_url"]).rstrip("/")
+        result = _post_json(
+            f"{base_url}/chat/completions",
+            {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "Return strict JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+            retry_cfg,
+        )
+        return _parse_dynamic_question_json(_extract_text_response(result))
+
+    raise ValueError(
+        f"Research question planner uses unsupported provider '{provider}'. "
+        "Supported providers: mock, openai, responses, anthropic, grok, openai_chat, chat_completions."
+    )
+
+
+def _render_research_questions_artifact(
+    static_questions: List[str],
+    dynamic_questions: List[DynamicQuestion],
+    final_questions: List[str],
+    error: str = "",
+) -> str:
+    lines = [
+        "# Research Discovery Questions",
+        "",
+        "## Static Baseline Questions",
+    ]
+    for question in static_questions:
+        lines.append(f"- {question}")
+
+    lines.extend(["", "## Agent-Proposed Additions"])
+    if dynamic_questions:
+        for item in dynamic_questions:
+            suffix = f" Reason: {item.reason}" if item.reason else ""
+            lines.append(f"- {item.question}{suffix}")
+    else:
+        lines.append("- None.")
+
+    if error:
+        lines.extend(["", "## Planner Error", f"- {error}"])
+
+    lines.extend(["", "## Final Questions Asked"])
+    for question in final_questions:
+        lines.append(f"- {question}")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _append_discovery_questions_context(
+    plan_md: str,
+    static_questions: List[str],
+    dynamic_questions: List[DynamicQuestion],
+) -> str:
+    lines = [
+        "",
+        "## Research Discovery Questions Used",
+        "- Static baseline questions were mandatory and could not be removed by the question planner.",
+        "- Agent-proposed questions were validated, deduplicated, and appended only if safe.",
+        "",
+        "### Static Baseline",
+    ]
+    for question in static_questions:
+        lines.append(f"- {question}")
+
+    lines.extend(["", "### Agent-Proposed Additions"])
+    if dynamic_questions:
+        for item in dynamic_questions:
+            suffix = f" Reason: {item.reason}" if item.reason else ""
+            lines.append(f"- {item.question}{suffix}")
+    else:
+        lines.append("- None.")
+
+    return plan_md.rstrip() + "\n" + "\n".join(lines) + "\n"
+
+
 def _format_shared_prompt_value(value: str) -> str:
     try:
         parsed = json.loads(value)
@@ -546,7 +804,7 @@ def _build_configured_reviewer(
     if provider in {"openai", "responses"}:
         return OpenAIReviewer(
             api_key,
-            spec.get("model", config["openai_model"]),
+            _model_for_spec(spec, config["openai_model"]),
             retry_cfg,
             spec.get("base_url", config["openai_base_url"]),
             name,
@@ -555,7 +813,7 @@ def _build_configured_reviewer(
     if provider == "anthropic":
         return AnthropicReviewer(
             api_key,
-            spec.get("model", config["anthropic_model"]),
+            _model_for_spec(spec, config["anthropic_model"]),
             retry_cfg,
             spec.get("base_url", config["anthropic_base_url"]),
             name,
@@ -564,7 +822,7 @@ def _build_configured_reviewer(
     if provider in {"grok", "openai_chat", "chat_completions"}:
         return GrokReviewer(
             api_key,
-            spec.get("model", config["grok_model"]),
+            _model_for_spec(spec, config["grok_model"]),
             retry_cfg,
             spec.get("base_url", config["grok_base_url"]),
             name,
@@ -629,7 +887,7 @@ def _build_configured_arbitrator(
         raise ValueError(f"Arbitrator '{name}' is missing an API key.")
 
     model, base_url = _provider_defaults(provider, config)
-    model = spec.get("model", model)
+    model = _model_for_spec(spec, model)
     base_url = spec.get("base_url", base_url)
 
     if provider in {"openai", "responses"}:
@@ -843,7 +1101,13 @@ def _run_review_iterations(
     return final_path
 
 
-def run(idea: str, iterations: int, output_root: Path, config_file: Path | None = None) -> Path:
+def run(
+    idea: str,
+    iterations: int,
+    output_root: Path,
+    config_file: Path | None = None,
+    workflow: str = "idea-to-plan-with-architect-review",
+) -> Path:
     answers: Dict[str, str] = {}
     print("Answer clarifying questions before the plan is generated.")
     for q in generate_questions(idea):
@@ -874,11 +1138,74 @@ def run(idea: str, iterations: int, output_root: Path, config_file: Path | None 
         iterations=iterations,
         idea=idea,
         product_name=product_name,
-        workflow="idea-to-plan-with-architect-review",
+        workflow=workflow,
         initial_artifact=initial_plan_path,
         ask_review_clarifications=True,
         config_file=config_file,
     )
+
+
+def run_research(topic: str, iterations: int, output_root: Path, config_file: Path | None = None) -> Path:
+    config = env_config(config_file=config_file)
+    static_questions = generate_research_questions(topic)
+    dynamic_error = ""
+    try:
+        dynamic_questions = _generate_dynamic_research_questions(topic, static_questions, config)
+    except Exception as exc:
+        dynamic_questions = []
+        dynamic_error = str(exc)
+    questions = merge_research_questions(static_questions, dynamic_questions)
+
+    answers: Dict[str, str] = {}
+    print("Answer research discovery questions before the plan is generated.")
+    for q in questions:
+        answer = prompt_user(display_question_for_user(q, answers))
+        answer = resolve_answer(topic, q, answer)
+        while needs_detail_for_question(q, answer):
+            detail_answer = prompt_user(display_question_for_user(detail_follow_up_for(q, answer), answers))
+            answer = f"{answer.rstrip()} {resolve_answer(topic, q, detail_answer)}"
+        answers[q] = answer
+        if should_ask_follow_up(answer):
+            follow_up = follow_up_for(q)
+            follow_up_answer = prompt_user(display_question_for_user(follow_up, answers))
+            answers[follow_up] = resolve_answer(topic, follow_up, follow_up_answer)
+
+    project_name = research_project_name_from_answers(topic, answers)
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = output_root / f"{timestamp}_{slugify(project_name)[:40]}_research"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    current_plan = build_initial_research_plan(topic, answers)
+    current_plan = _append_discovery_questions_context(current_plan, static_questions, dynamic_questions)
+    initial_plan_path = run_dir / "initial_plan.md"
+    write_text(initial_plan_path, current_plan)
+    questions_path = run_dir / "discovery_questions.md"
+    write_text(
+        questions_path,
+        _render_research_questions_artifact(static_questions, dynamic_questions, questions, dynamic_error),
+    )
+    print(f"\nInitial research plan written: {initial_plan_path}")
+    print(f"Research discovery questions written: {questions_path}")
+
+    final_path = _run_review_iterations(
+        current_plan=current_plan,
+        run_dir=run_dir,
+        iterations=iterations,
+        idea=topic,
+        product_name=project_name,
+        workflow="research-to-plan-with-review",
+        initial_artifact=initial_plan_path,
+        ask_review_clarifications=False,
+        config_file=config_file,
+    )
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    artifacts = manifest.get("artifacts", {})
+    if isinstance(artifacts, dict):
+        artifacts["discovery_questions"] = str(questions_path)
+        manifest["artifacts"] = artifacts
+        write_json(manifest_path, manifest)
+    return final_path
 
 
 def run_plan_review(plan_path: Path, iterations: int, output_root: Path, config_file: Path | None = None) -> Path:
@@ -924,9 +1251,15 @@ def parse_args() -> argparse.Namespace:
     pre_source = pre_parser.add_mutually_exclusive_group()
     pre_source.add_argument("--idea")
     pre_source.add_argument("--plan-file")
+    pre_source.add_argument("--research")
     pre_parser.add_argument("--config")
     pre_args, _remaining = pre_parser.parse_known_args()
-    workflow = "existing-plan" if pre_args.plan_file else "new-idea"
+    if pre_args.plan_file:
+        workflow = "existing-plan"
+    elif pre_args.research:
+        workflow = "research"
+    else:
+        workflow = "new-idea"
     config_file = Path(pre_args.config) if pre_args.config else default_config_path(workflow)
     cfg = env_config(workflow=workflow, config_file=config_file)
 
@@ -934,9 +1267,14 @@ def parse_args() -> argparse.Namespace:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--idea", help="High-level product or feature idea.")
     source.add_argument("--plan-file", help="Existing implementation plan markdown file to critique as software architects.")
+    source.add_argument("--research", help="Research topic, product idea, or market hypothesis to turn into an implementation plan.")
     parser.add_argument(
         "--config",
-        help="Optional config file. Defaults to inspector.new-idea.config.json for --idea and inspector.existing-plan.config.json for --plan-file when present.",
+        help=(
+            "Optional config file. Defaults to inspector.new-idea.config.json for --idea, "
+            "inspector.existing-plan.config.json for --plan-file, and inspector.research.config.json "
+            "for --research when present."
+        ),
     )
     parser.add_argument(
         "--iterations",
@@ -961,6 +1299,8 @@ def main() -> None:
         raise SystemExit("--iterations must be >= 1")
     if args.plan_file:
         run_plan_review(Path(args.plan_file), args.iterations, Path(args.output), args.config_file)
+    elif args.research:
+        run_research(args.research, args.iterations, Path(args.output), args.config_file)
     else:
         run(args.idea, args.iterations, Path(args.output), args.config_file)
 

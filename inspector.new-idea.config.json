@@ -2,6 +2,10 @@
 "agent_mode": "live",
 "allow_mock_fallback": false,
 
+
+"openai_model": "gpt-5.4",
+"anthropic_model": "claude-haiku-4-5",
+"grok_model": "grok-3",
 "document_goal": "Generate an implementation-ready engineering plan from a product or feature idea. The final output must be suitable for direct engineering execution, not just high-level critique.",
 
 "global_instruction": "The user wants a practical implementation plan for a general software product. Prefer concrete engineering tasks, dependencies, database/API/frontend/backend implications, edge cases, security/privacy risks, observability, rollout, rollback, and acceptance criteria. Avoid generic advice. If requirements are unclear, make reasonable assumptions and list them explicitly instead of stopping the plan.",
@@ -146,7 +150,6 @@
 "category": "default",
 "active": true,
 "provider": "openai",
-"model": "gpt-5.4",
 "api_key_env": "OPENAI_API_KEY",
 "prompt": "Focus on product value, user roles, real-world workflows, MVP scope, non-goals, confusing requirements, user incentives, adoption friction, failure cases, and whether the feature solves the intended problem without unnecessary complexity."
 },
@@ -155,7 +158,6 @@
 "category": "default",
 "active": true,
 "provider": "anthropic",
-"model": "claude-haiku-4-5",
 "api_key_env": "ANTHROPIC_API_KEY",
 "prompt": "Focus on architecture, service boundaries, data ownership, schema direction, integration boundaries, operational readiness, dependency direction, failure isolation, extensibility, and whether the implementation order reduces technical risk."
 },
@@ -165,7 +167,6 @@
 "active": false,
 "activate_when": "Use for complex data pipelines, analytics, imports/exports, reporting, event streams, lifecycle management, auditability, or cross-system data ownership.",
 "provider": "openai",
-"model": "gpt-5.4",
 "api_key_env": "OPENAI_API_KEY",
 "prompt": "Focus on data modeling, schema design, migrations, indexes, query performance, transaction boundaries, data ownership, lifecycle management, auditability, backup/restore implications, import/export needs, reporting needs, and whether the proposed data flow supports reliable product operation."
 },
@@ -174,7 +175,6 @@
   "category": "default",
   "active": true,
   "provider": "openai",
-  "model": "gpt-5.4",
   "api_key_env": "OPENAI_API_KEY",
   "prompt": "Focus on database design, schema modeling, normalization/denormalization tradeoffs, migrations, indexes, constraints, foreign keys, transactions, isolation levels, query performance, pagination, locking, concurrency issues, soft deletes, audit tables, backup/restore, data retention, reporting queries, and whether the database design supports reliable product operation."
 },
@@ -183,7 +183,6 @@
 "category": "default",
 "active": true,
 "provider": "anthropic",
-"model": "claude-haiku-4-5",
 "api_key_env": "ANTHROPIC_API_KEY",
 "prompt": "Focus on authentication, authorization, object-level access control, IDOR/BOLA, privacy, retention, auditability, abuse cases, sensitive data exposure, rate limiting, tenant isolation, secure defaults, secret handling, and security-specific tests."
 },
@@ -192,7 +191,6 @@
 "category": "default",
 "active": true,
 "provider": "openai",
-"model": "gpt-5.4",
 "api_key_env": "OPENAI_API_KEY",
 "prompt": "Focus on user journeys, information architecture, accessibility, empty/loading/error states, interaction clarity, onboarding, mobile/desktop usability, form validation, user recovery paths, and whether the plan includes enough UX validation."
 },
@@ -201,7 +199,6 @@
 "category": "default",
 "active": true,
 "provider": "openai",
-"model": "gpt-5.4",
 "api_key_env": "OPENAI_API_KEY",
 "prompt": "Focus on implementation feasibility across frontend, backend, APIs, data flow, validation, error handling, state management, integration seams, code organization, database transactions, migrations, background jobs, and whether the plan is practical for engineers to build."
 },
@@ -210,7 +207,6 @@
 "category": "default",
 "active": true,
 "provider": "openai",
-"model": "gpt-5.4",
 "api_key_env": "OPENAI_API_KEY",
 "prompt": "Focus on testability, unit tests, integration tests, API tests, frontend flow tests, regression risks, test data, edge cases, negative tests, concurrency tests, security test cases, accessibility checks, performance tests, and acceptance-test coverage."
 },
@@ -219,7 +215,6 @@
 "category": "default",
 "active": true,
 "provider": "grok",
-"model": "grok-3",
 "api_key_env": "GROK_API_KEY",
 "prompt": "Focus on infrastructure, deployment topology, CI/CD, environments, secrets management, configuration management, observability, incident response, backup/restore, scalability, release safety, rollback operations, operational runbooks, and production readiness."
 },
@@ -228,7 +223,6 @@
 "category": "default",
 "active": true,
 "provider": "openai",
-"model": "gpt-5.4",
 "api_key_env": "OPENAI_API_KEY",
 "prompt": "Focus on delivery sequencing, acceptance criteria, dependency management, test strategy, rollback, degraded mode, performance targets, observability, release safety, launch gates, unresolved product decisions, and whether the implementation order is realistic."
 },
@@ -237,7 +231,6 @@
 "category": "default",
 "active": true,
 "provider": "openai",
-"model": "gpt-5.4",
 "api_key_env": "OPENAI_API_KEY",
 "prompt": "Focus on translating requirements into an implementation team plan. Estimate engineering effort in man-days, identify required roles and staffing levels, sequence work by dependency, call out assumptions behind estimates, and flag scope that materially changes timeline or team composition."
 },
@@ -248,7 +241,6 @@
   "active": false,
   "activate_when": "Use for high concurrency, heavy queries, media processing, background jobs, exports, analytics, strict latency requirements, or expensive third-party/AI calls.",
   "provider": "openai",
-  "model": "gpt-5.4",
   "api_key_env": "OPENAI_API_KEY",
   "prompt": "Focus on latency, throughput, concurrency, database load, caching, queueing, background jobs, rate limits, bottlenecks, resource usage, degradation behavior, load testing, and whether the implementation can handle realistic production traffic."
 },
@@ -258,7 +250,6 @@
   "active": false,
   "activate_when": "Use for multiple clients, public APIs, mobile apps, third-party integrations, complex frontend/backend handoff, versioning, or many endpoints.",
   "provider": "openai",
-  "model": "gpt-5.4",
   "api_key_env": "OPENAI_API_KEY",
   "prompt": "Focus on API contract quality, endpoint structure, request and response DTOs, validation rules, error response consistency, pagination, filtering, sorting, idempotency, versioning, backward compatibility, frontend/backend integration seams, and whether the API is clear enough for independent frontend and backend implementation."
 },
@@ -268,7 +259,6 @@
   "active": false,
   "activate_when": "Use for sensitive data, minors, health, finance, education, identity, legal records, regulated domains, audit requirements, or strict retention/deletion needs.",
   "provider": "openai",
-  "model": "gpt-5.4",
   "api_key_env": "OPENAI_API_KEY",
   "prompt": "Focus on privacy, consent, data minimization, retention, deletion, export, auditability, access boundaries, sensitive data handling, data subject requests, compliance-sensitive workflows, and whether the implementation plan contains enough controls for responsible data handling."
 },
@@ -278,7 +268,6 @@
   "active": false,
   "activate_when": "Use for payments, subscriptions, refunds, invoices, credits, coupons, commissions, taxation, revenue recognition, or financial reconciliation.",
   "provider": "openai",
-  "model": "gpt-5.4",
   "api_key_env": "OPENAI_API_KEY",
   "prompt": "Focus on payment flows, subscriptions, invoices, refunds, credits, coupons, commissions, taxation implications, reconciliation, payment failure handling, ledger consistency, auditability, and support workflows for billing issues."
 },
@@ -288,7 +277,6 @@
   "active": false,
   "activate_when": "Use for LLMs, recommendation systems, classification, scoring, ranking, embeddings, RAG, automated decision-making, model evaluation, or AI safety concerns.",
   "provider": "openai",
-  "model": "gpt-5.4",
   "api_key_env": "OPENAI_API_KEY",
   "prompt": "Focus on model behavior, data quality, evaluation, prompt reliability, hallucination risk, bias, explainability, fallback behavior, human review, monitoring, drift, cost controls, latency, safety boundaries, and whether AI/ML outputs are validated before affecting users."
 },
@@ -298,7 +286,6 @@
   "active": false,
   "activate_when": "Use for production support workflows, admin recovery tools, customer support dashboards, incident workflows, manual overrides, or user-facing failure recovery.",
   "provider": "openai",
-  "model": "gpt-5.4",
   "api_key_env": "OPENAI_API_KEY",
   "prompt": "Focus on post-launch supportability, admin recovery tools, audit views, manual overrides, user complaint handling, failed-job recovery, resend flows, operational dashboards, support diagnostics, incident response, and whether non-engineers can understand and recover common failure cases."
 },
@@ -308,7 +295,6 @@
   "active": false,
   "activate_when": "Use for terms of service, user-generated content, regulated domains, marketplace liability, intellectual property, contracts, public claims, or legal exposure. This reviewer should identify product/legal risk areas but must not provide formal legal advice.",
   "provider": "openai",
-  "model": "gpt-5.4",
   "api_key_env": "OPENAI_API_KEY",
   "prompt": "Focus on legal risk areas, terms of service implications, user-generated content risk, intellectual property concerns, marketplace/platform liability, public claims, consent language, dispute handling, and areas where professional legal review may be required. Do not provide formal legal advice."
 }
@@ -318,7 +304,6 @@
 "name": "Arbitrator",
 "active": true,
 "provider": "grok",
-"model": "grok-3",
 "api_key_env": "GROK_API_KEY",
 "prompt": "Reconcile the active reviewer critiques into one implementation plan suitable for direct engineering execution. The final document must be concrete, sequenced, and implementation-ready. Merge duplicate concerns, resolve contradictions explicitly, and preserve justified dissent under Open Concerns. Do not drop relevant security, privacy, UX, DevOps, full-stack implementation, data, staffing, man-day estimates, performance, observability, rollback, or test requirements. Convert reviewer feedback into the final output contract structure. Every major concern from active reviewers must either be incorporated into the plan or explicitly listed under Open Concerns with a reason. Avoid generic recommendations. Prefer concrete tasks, dependencies, validation steps, and engineering decisions. If information is missing, make reasonable assumptions and list them explicitly."
 }

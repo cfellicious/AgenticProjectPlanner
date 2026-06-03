@@ -155,6 +155,12 @@ class ReviewFollowUp:
     evidence: str
 
 
+@dataclass(frozen=True)
+class DynamicQuestion:
+    question: str
+    reason: str = ""
+
+
 DISCOVERY_DIMENSIONS = [
     DiscoveryDimension(
         key="knowledge_level",
@@ -336,9 +342,114 @@ DISCOVERY_DIMENSIONS = [
 
 QUESTION_BANK = [dimension.prompt for dimension in DISCOVERY_DIMENSIONS if not dimension.markers]
 
+RESEARCH_DISCOVERY_DIMENSIONS = [
+    DiscoveryDimension(
+        key="knowledge_level",
+        prompt="How familiar are you with this research area? Choose one: beginner, familiar, or expert.",
+        planning_label="Research-area familiarity for question tailoring",
+    ),
+    DiscoveryDimension(
+        key="project_name",
+        prompt="What is the working title or short name for this research project?",
+        planning_label="Research project title",
+    ),
+    DiscoveryDimension(
+        key="research_area",
+        prompt="What research area, field, or subfield does this project belong to?",
+        planning_label="Research area and subfield",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="research_problem",
+        prompt="What problem, gap, or uncertainty should this research investigate?",
+        planning_label="Research problem or gap",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="research_question",
+        prompt="What is the main research question you want to answer?",
+        planning_label="Main research question",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="hypothesis",
+        prompt="What hypothesis, claim, or expected contribution should the research test?",
+        planning_label="Hypothesis or expected contribution",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="related_work",
+        prompt="What related work, existing methods, products, papers, or baselines do you already know about?",
+        planning_label="Known related work and baselines",
+    ),
+    DiscoveryDimension(
+        key="novelty",
+        prompt="What do you believe is new, different, or worth publishing about this idea?",
+        planning_label="Novelty and contribution angle",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="methodology",
+        prompt="What method, prototype, analysis, model, system, survey, or study do you expect to use?",
+        planning_label="Planned methodology",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="data_sources",
+        prompt="What data, participants, systems, documents, logs, benchmarks, or examples will the research need?",
+        planning_label="Data sources or study material",
+    ),
+    DiscoveryDimension(
+        key="evaluation",
+        prompt="How should the research be evaluated: experiments, user study, case study, benchmark, statistical test, qualitative analysis, or another approach?",
+        planning_label="Evaluation approach",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="metrics",
+        prompt="What outcomes or metrics would show that the claim is supported?",
+        planning_label="Evaluation metrics and success evidence",
+    ),
+    DiscoveryDimension(
+        key="constraints",
+        prompt="What constraints exist: time, compute, budget, data access, ethics approval, team skills, or publication deadline?",
+        planning_label="Research constraints",
+    ),
+    DiscoveryDimension(
+        key="ethics",
+        prompt="Could this involve human subjects, sensitive data, privacy risk, security risk, bias, or possible misuse?",
+        planning_label="Ethics, privacy, safety, and misuse risks",
+    ),
+    DiscoveryDimension(
+        key="reproducibility",
+        prompt="What should be reproducible or shared: code, data, prompts, models, environment, scripts, or experiment logs?",
+        planning_label="Reproducibility and artifact expectations",
+    ),
+    DiscoveryDimension(
+        key="target_output",
+        prompt="What is the desired output: paper, thesis chapter, prototype, benchmark, dataset, survey, grant proposal, or internal research report?",
+        planning_label="Target research output",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="target_venue",
+        prompt="Do you have a target conference, journal, course, supervisor, company audience, or review standard?",
+        planning_label="Target venue or review standard",
+    ),
+]
+
+RESEARCH_QUESTION_BANK = [dimension.prompt for dimension in RESEARCH_DISCOVERY_DIMENSIONS if not dimension.markers]
+
 
 def _prompt_for(key: str) -> str:
     for dimension in DISCOVERY_DIMENSIONS:
+        if dimension.key == key:
+            return dimension.prompt
+    raise KeyError(key)
+
+
+def _research_prompt_for(key: str) -> str:
+    for dimension in RESEARCH_DISCOVERY_DIMENSIONS:
         if dimension.key == key:
             return dimension.prompt
     raise KeyError(key)
@@ -356,6 +467,13 @@ def product_name_from_answers(idea: str, answers: Dict[str, str]) -> str:
     return idea
 
 
+def research_project_name_from_answers(topic: str, answers: Dict[str, str]) -> str:
+    project_name = answers.get(_research_prompt_for("project_name"), "").strip()
+    if project_name and not _is_low_signal(project_name):
+        return project_name
+    return topic
+
+
 def generate_questions(idea: str, answers: Dict[str, str] | None = None) -> List[str]:
     existing_answers = answers or {}
     lower_idea = idea.lower()
@@ -368,6 +486,93 @@ def generate_questions(idea: str, answers: Dict[str, str] | None = None) -> List
             selected.append(dimension.prompt)
 
     return selected
+
+
+def generate_research_questions(topic: str, answers: Dict[str, str] | None = None) -> List[str]:
+    existing_answers = answers or {}
+    lower_topic = topic.lower()
+
+    selected: List[str] = []
+    for dimension in RESEARCH_DISCOVERY_DIMENSIONS:
+        if dimension.markers and not any(marker in lower_topic for marker in dimension.markers):
+            continue
+        if dimension.prompt not in existing_answers:
+            selected.append(dimension.prompt)
+
+    return selected
+
+
+def normalize_dynamic_research_questions(raw_items: object, max_questions: int = 6) -> List[DynamicQuestion]:
+    if not isinstance(raw_items, list):
+        return []
+
+    questions: List[DynamicQuestion] = []
+    seen: set[str] = set()
+    baseline = {_normalize_question_key(question) for question in RESEARCH_QUESTION_BANK}
+
+    for item in raw_items:
+        reason = ""
+        if isinstance(item, str):
+            question = item
+        elif isinstance(item, dict):
+            question = str(item.get("question", ""))
+            reason = str(item.get("reason", ""))
+        else:
+            continue
+
+        cleaned = _clean_dynamic_question(question)
+        if not cleaned:
+            continue
+        key = _normalize_question_key(cleaned)
+        if key in seen or key in baseline:
+            continue
+        seen.add(key)
+        questions.append(DynamicQuestion(question=cleaned, reason=reason.strip()))
+        if len(questions) >= max_questions:
+            break
+
+    return questions
+
+
+def merge_research_questions(static_questions: List[str], dynamic_questions: List[DynamicQuestion]) -> List[str]:
+    merged = list(static_questions)
+    seen = {_normalize_question_key(question) for question in merged}
+    for dynamic_question in dynamic_questions:
+        key = _normalize_question_key(dynamic_question.question)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dynamic_question.question)
+    return merged
+
+
+def _clean_dynamic_question(question: str) -> str:
+    cleaned = " ".join(question.strip().split())
+    if not cleaned:
+        return ""
+    if len(cleaned) > 220:
+        return ""
+    if not cleaned.endswith("?"):
+        return ""
+    lowered = cleaned.lower()
+    blocked_markers = (
+        "ignore previous",
+        "system prompt",
+        "developer message",
+        "api key",
+        "secret",
+        "password",
+        "token",
+        "execute",
+        "shell",
+    )
+    if any(marker in lowered for marker in blocked_markers):
+        return ""
+    return cleaned
+
+
+def _normalize_question_key(question: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", question.lower()).strip()
 
 
 def should_ask_follow_up(answer: str) -> bool:
@@ -384,6 +589,8 @@ def sentence_count(answer: str) -> int:
 def needs_detail_for_question(question: str, answer: str) -> bool:
     if question == _prompt_for("product_narrative"):
         return sentence_count(answer) < 10
+    if question == _research_prompt_for("research_problem"):
+        return sentence_count(answer) < 3
     return False
 
 
@@ -395,36 +602,69 @@ def detail_follow_up_for(question: str, answer: str) -> str:
             f"{remaining} more sentence{'s' if remaining != 1 else ''}. "
             "Cover the product, main user workflows, buyer/customer, pricing or revenue model, and why users would pay or engage."
         )
+    if question == _research_prompt_for("research_problem"):
+        remaining = max(3 - sentence_count(answer), 1)
+        return (
+            "Please expand this answer with at least "
+            f"{remaining} more sentence{'s' if remaining != 1 else ''}. "
+            "Cover the research gap, why it matters, and what would make the answer useful."
+        )
     return follow_up_for(question)
 
 
 def user_knowledge_level(answers: Dict[str, str]) -> str:
-    answer = answers.get(_prompt_for("knowledge_level"), "").strip().lower()
+    answer = answers.get(
+        _prompt_for("knowledge_level"),
+        answers.get(_research_prompt_for("knowledge_level"), ""),
+    ).strip().lower()
     if any(marker in answer for marker in ("non", "beginner", "business", "founder", "not technical")):
         return "non-technical"
     if any(marker in answer for marker in ("some", "medium", "moderate")):
         return "somewhat technical"
-    if any(marker in answer for marker in ("technical", "engineer", "developer", "architect")):
+    if any(marker in answer for marker in ("technical", "engineer", "developer", "architect", "expert")):
         return "technical"
+    if any(marker in answer for marker in ("familiar", "researcher", "academic")):
+        return "somewhat technical"
     return "unknown"
 
 
 def display_question_for_user(question: str, answers: Dict[str, str]) -> str:
     level = user_knowledge_level(answers)
-    if question in {_prompt_for("knowledge_level"), _prompt_for("product_name")}:
+    is_research_question = question in {dimension.prompt for dimension in RESEARCH_DISCOVERY_DIMENSIONS}
+    if question in {
+        _prompt_for("knowledge_level"),
+        _prompt_for("product_name"),
+        _research_prompt_for("knowledge_level"),
+        _research_prompt_for("project_name"),
+    }:
         return question
 
     if level == "non-technical":
+        if is_research_question:
+            return (
+                f"{question}\n"
+                "Answer in plain research terms. You do not need to know statistics, methodology, or publication terminology."
+            )
         return (
             f"{question}\n"
             "Answer in plain product/business terms. You do not need to know testing, security, database, or infrastructure terminology."
         )
     if level == "somewhat technical":
+        if is_research_question:
+            return (
+                f"{question}\n"
+                "Use research goals first. Add methods, datasets, metrics, or venue constraints only where you already know them."
+            )
         return (
             f"{question}\n"
             "Use product terms first. Add technical preferences only where you already know them."
         )
     if level == "technical":
+        if is_research_question:
+            return (
+                f"{question}\n"
+                "Include relevant research constraints, methodology, data, metrics, baselines, or validity concerns if you know them."
+            )
         return (
             f"{question}\n"
             "Include relevant technical constraints, protocols, data ownership, scale, or operational requirements if you know them."
@@ -630,6 +870,175 @@ def assess_discovery(idea: str, answers: Dict[str, str]) -> DiscoveryAssessment:
         readiness_score=readiness_score,
         readiness_reason=readiness_reason,
     )
+
+
+def assess_research_discovery(topic: str, answers: Dict[str, str]) -> DiscoveryAssessment:
+    questions = _dedupe(generate_research_questions(topic, {}))
+    user_decisions: List[str] = []
+    needs_user_input: List[str] = []
+
+    for question in questions:
+        answer = answers.get(question, "Not specified")
+        if _is_low_signal(answer):
+            needs_user_input.append(question)
+        else:
+            user_decisions.append(f"{question} {answer}")
+
+    answered_count = len(user_decisions)
+    total_count = len(questions) or 1
+    readiness_score = round((answered_count / total_count) * 100)
+    critical_prompts = {dimension.prompt for dimension in RESEARCH_DISCOVERY_DIMENSIONS if dimension.critical}
+    critical_missing = [q for q in needs_user_input if q in critical_prompts]
+
+    if critical_missing:
+        readiness = "NOT READY"
+        readiness_reason = "Critical research-design decisions are unresolved."
+    elif needs_user_input:
+        readiness = "CONDITIONAL"
+        readiness_reason = "Enough exists for a draft research plan, but research-design gaps remain."
+    else:
+        readiness = "READY"
+        readiness_reason = "Discovery answers cover the required research-planning inputs."
+
+    assumed_defaults = [
+        "Assumed Default: Do not invent citations; related-work gaps become literature-search tasks.",
+        "Assumed Default: Evaluation must include explicit baselines, metrics, and validity threats.",
+        "Assumed Default: Research involving people, sensitive data, or possible harm requires ethics/privacy review before data collection.",
+        "Assumed Default: Reproducibility includes pinned environment, documented data processing, seeds where applicable, and experiment logs.",
+        "Assumed Default: Claims must be traceable to evidence, statistical tests, qualitative coding, or clearly labeled assumptions.",
+    ]
+
+    return DiscoveryAssessment(
+        user_decisions=user_decisions,
+        needs_user_input=needs_user_input,
+        assumed_defaults=assumed_defaults,
+        readiness=readiness,
+        readiness_score=readiness_score,
+        readiness_reason=readiness_reason,
+    )
+
+
+def build_initial_research_plan(topic: str, answers: Dict[str, str]) -> str:
+    assessment = assess_research_discovery(topic, answers)
+    label_by_prompt = {dimension.prompt: dimension.planning_label for dimension in RESEARCH_DISCOVERY_DIMENSIONS}
+
+    lines = [
+        f"# Research Plan: {topic}",
+        "",
+        "## 1. Research Framing",
+        f"- Raw topic or hypothesis: {topic}",
+        "- Goal: convert the research idea into a concrete research execution plan with questions, methods, evidence, risks, and deliverables.",
+        "",
+        "## 2. Discovery Conversation",
+    ]
+    for q, a in answers.items():
+        lines.append(f"- **{q}** {a}")
+
+    lines.extend(
+        [
+            "",
+            "## 3. Research Contract",
+            "- Research gaps must be made explicit instead of silently converted into product assumptions.",
+            "- Literature, baselines, datasets, ethics, and evaluation choices are first-class planning inputs.",
+            "- Reviewers must not invent specific citations; unknown prior work becomes a search task.",
+            "- The final plan must distinguish hypotheses, assumptions, evidence needed, and open risks.",
+            "",
+            "## 4. Readiness Gate",
+            f"- Status: {assessment.readiness}",
+            f"- Score: {assessment.readiness_score}/100",
+            f"- Reason: {assessment.readiness_reason}",
+            "",
+            "## 5. Confirmed Research Decisions",
+        ]
+    )
+    if assessment.user_decisions:
+        for item in assessment.user_decisions:
+            prompt, _, answer = item.partition("? ")
+            label = label_by_prompt.get(prompt + "?", prompt)
+            lines.append(f"- {label}: {answer if answer else item}")
+    else:
+        lines.append("- No validated research decisions yet.")
+
+    lines.extend(["", "## 6. Assumed Research Defaults"])
+    for default in assessment.assumed_defaults:
+        lines.append(f"- {default}")
+
+    lines.extend(["", "## 7. Needs Research Input"])
+    if assessment.needs_user_input:
+        for item in assessment.needs_user_input:
+            lines.append(f"- {item}")
+    else:
+        lines.append("- None.")
+
+    lines.extend(
+        [
+            "",
+            "## 8. Research Questions and Hypotheses",
+            "- Define the primary research question in falsifiable or answerable terms.",
+            "- Define secondary questions only if they support the primary contribution.",
+            "- Map each hypothesis or claim to the evidence required to support it.",
+            "",
+            "## 9. Related Work and Baseline Search Plan",
+            "- Identify keywords, venues, authors, products, datasets, and baseline methods to search.",
+            "- Record closest prior work and explain the novelty boundary against each baseline.",
+            "- Do not claim novelty until the search has been completed and summarized.",
+            "",
+            "## 10. Methodology",
+            "- Specify the method, prototype, model, survey, study protocol, analysis, or system to build or examine.",
+            "- Define variables, controls, assumptions, and operational definitions.",
+            "- Identify confounders and decisions that could bias the results.",
+            "",
+            "## 11. Data, Participants, and Materials",
+            "- List required datasets, participant groups, logs, documents, benchmarks, prompts, or systems.",
+            "- Define acquisition, cleaning, labeling, consent, licensing, access control, and retention expectations.",
+            "- Define train/validation/test or sampling strategy where applicable.",
+            "",
+            "## 12. Evaluation Design",
+            "- Select baselines, controls, ablations, case studies, user tasks, or comparison groups.",
+            "- Define primary and secondary metrics before running experiments.",
+            "- Define statistical tests, confidence intervals, effect sizes, or qualitative coding methods where applicable.",
+            "",
+            "## 13. Validity, Ethics, and Risk",
+            "- Internal validity: confounders, leakage, implementation bias, measurement error.",
+            "- External validity: generalization limits, dataset representativeness, domain transfer.",
+            "- Construct validity: whether metrics and observations actually measure the claimed concept.",
+            "- Ethics/privacy/safety: human-subjects review, sensitive data, consent, bias, misuse, and disclosure boundaries.",
+            "",
+            "## 14. Reproducibility and Artifact Plan",
+            "- Pin code, dependencies, data-processing scripts, random seeds, prompts, model versions, and hardware assumptions.",
+            "- Track experiment configs, raw outputs, analysis notebooks, and final result tables.",
+            "- Decide what can be released publicly and what must remain private or synthetic.",
+            "",
+            "## 15. Work Plan",
+            "1. Finalize research question, hypothesis, contribution, and target output.",
+            "2. Run literature and baseline search; summarize closest prior work.",
+            "3. Lock methodology, datasets/materials, ethics requirements, and evaluation protocol.",
+            "4. Build prototype, collection pipeline, benchmark harness, survey, or analysis workflow.",
+            "5. Run pilot study or dry-run experiments and adjust only pre-declared protocol issues.",
+            "6. Run final evaluation, statistical/qualitative analysis, and validity review.",
+            "7. Write paper/report with limitations, reproducibility notes, and artifact appendix.",
+            "",
+            "## 16. Acceptance Criteria",
+            "- Research question is specific enough that reviewers can tell whether it was answered.",
+            "- Related-work search identifies closest baselines and novelty risks.",
+            "- Evaluation protocol directly tests the main claim.",
+            "- Ethics/privacy risks are reviewed before data collection or deployment.",
+            "- Results are reproducible enough for the target output or venue.",
+            "",
+            "## 17. Review Handoff",
+            "- Reviewer agents should challenge novelty, methodology, evaluation, statistics, validity, reproducibility, ethics, and writing clarity.",
+            "- Reviewer agents should identify missing research-design decisions as questions, not silently invent results or citations.",
+            "- Arbitrator should produce a concrete research execution plan, not a product launch plan.",
+            "",
+            "## 18. Open Risks",
+            "- Literature search may reveal the contribution is not novel.",
+            "- Data or participant access may be unavailable or biased.",
+            "- Evaluation may not support the claimed contribution.",
+            "- Ethics, privacy, or misuse risks may require scope changes.",
+        ]
+    )
+
+    return "\n".join(lines) + "\n"
 
 
 def build_initial_plan(idea: str, answers: Dict[str, str]) -> str:

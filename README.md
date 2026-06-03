@@ -1,13 +1,14 @@
-# Implementation Plan Inspector
+# Agentic AI Planner for Ideation
 
-Turn a raw product idea into an actionable implementation plan, or critique an existing implementation plan through software-architect reviewer agents.
+Turn a raw product idea or research topic into an actionable implementation plan, or critique an existing implementation plan through software-architect reviewer agents.
 
 ## What it does
 
-The project supports two workflows:
+The project supports three workflows:
 
 1. **Idea-to-plan workflow**: turn a raw product idea into a structured implementation plan, then harden it through reviewer-agent critique.
 2. **Existing-plan architect critique workflow**: take an implementation plan markdown file and have configurable reviewer agents behave as senior software architects who critique architecture, performance, security, edge cases, and testing gaps. The arbitrator produces the revised final document.
+3. **Research-to-plan workflow**: take a research topic, early product hypothesis, market question, or product idea that needs research framing, then run the planning and architect-review pipeline with a research-specific agent configuration.
 
 The idea-to-plan workflow:
 
@@ -21,6 +22,10 @@ The idea-to-plan workflow:
 The planner is idea-agnostic but domain-aware. It uses discovery dimensions rather than a fixed technical questionnaire. Prompts are written in plain language for non-technical users, then mapped into planning labels such as target users, primary journey, v1 scope, sensitive data, failure behavior, integrations, technology constraints, and launch criteria.
 
 Extra dimensions are added when the idea mentions broad signals such as AI, billing, APIs, hardware, alerts, location, or regulated data.
+
+The research-to-plan workflow uses a separate research discovery flow. Instead of product launch, monetization, and v1 user-journey questions, it asks about research area, research problem, research question, hypothesis, related work, novelty, methodology, datasets or participants, evaluation design, metrics, constraints, ethics, reproducibility, target output, and venue/review expectations.
+
+Research runs can optionally use a `research_question_planner` agent to propose extra topic-specific discovery questions. This is additive only: static critical questions remain mandatory, agent output must be strict JSON, unsafe or duplicate questions are discarded, and the final question set is written to `discovery_questions.md` and embedded in `initial_plan.md` for reviewer context.
 
 ## Discovery behavior
 
@@ -134,6 +139,12 @@ Critique an existing implementation plan:
 python3 src/inspector.py --plan-file plans/implementation-plan-inspector-plan.md --iterations 2
 ```
 
+Start from a research topic or product hypothesis:
+
+```bash
+python3 src/inspector.py --research "Research whether a privacy-first photo sharing app is viable" --iterations 2
+```
+
 ## Output structure
 
 Runs create a timestamped folder under `output/`:
@@ -159,8 +170,44 @@ Existing-plan architect critique runs use the same artifact names and add `_arch
 
 - By default this project uses built-in deterministic mock agents so it runs without API keys.
 - The runtime supports any non-empty reviewer list plus one arbitrator.
-- Prefer workflow-specific config files for agent setup. Start from `inspector.new-idea.config.example.json` for `--idea` and `inspector.existing-plan.config.example.json` for `--plan-file`.
-- The CLI automatically uses `inspector.new-idea.config.json` for new ideas and `inspector.existing-plan.config.json` for existing-plan critique when those files exist. Use `--config` or `INSPECTOR_CONFIG_FILE` to override.
+- Prefer workflow-specific config files for agent setup. Start from `inspector.new-idea.config.example.json` for `--idea`, `inspector.existing-plan.config.example.json` for `--plan-file`, and `inspector.research.config.example.json` for `--research`.
+- The CLI automatically uses `inspector.new-idea.config.json` for new ideas, `inspector.existing-plan.config.json` for existing-plan critique, and `inspector.research.config.json` for research runs when those files exist. Use `--config` or `INSPECTOR_CONFIG_FILE` to override.
+- Set provider-level model defaults once with `OPENAI_MODEL`, `ANTHROPIC_MODEL`, and `GROK_MODEL` in `.env`, or with top-level `openai_model`, `anthropic_model`, and `grok_model` in a workflow config. Reviewer and arbitrator entries inherit those defaults when they omit `model`.
+- Use an agent-level `model` only when one reviewer or arbitrator should intentionally use a different model than the provider default.
+- Use an agent-level `model_env` when one reviewer or arbitrator should read its model from a named environment variable, for example `OPENAI_FAST_MODEL` or `OPENAI_DEEP_MODEL`.
+- For research runs, `research_question_planner` can be enabled in `inspector.research.config.json` or through `INSPECTOR_RESEARCH_QUESTION_PLANNER`. It proposes extra discovery questions before the user interview.
+
+Example reviewer entries using two OpenAI models:
+
+```json
+{
+  "name": "Fast Reviewer",
+  "provider": "openai",
+  "model_env": "OPENAI_FAST_MODEL",
+  "api_key_env": "OPENAI_API_KEY",
+  "prompt": "Do a fast first-pass review."
+},
+{
+  "name": "Deep Reviewer",
+  "provider": "openai",
+  "model_env": "OPENAI_DEEP_MODEL",
+  "api_key_env": "OPENAI_API_KEY",
+  "prompt": "Do a deeper risk review."
+}
+```
+
+Example research question planner:
+
+```json
+{
+  "active": true,
+  "name": "Research Question Planner",
+  "provider": "openai",
+  "model_env": "OPENAI_DEEP_MODEL",
+  "api_key_env": "OPENAI_API_KEY"
+}
+```
+
 - The examples demonstrate a seven-reviewer default stack: Software Architect and Security Analyst backed by Claude, Delivery Manager, UI/UX Analyst, Full Stack Engineer, and Team Lead backed by OpenAI, DevOps Engineer backed by Grok, and an Arbitrator backed by Grok.
 - `reviewers` and `arbitrator` support `mock`, `openai`/`responses`, `anthropic`, and OpenAI-compatible chat providers via `grok`, `openai_chat`, or `chat_completions`.
 - Reviewer entries can include `category` metadata and `active`. Reviewers with `active: false` are skipped; missing `active` defaults to enabled for backward compatibility.
