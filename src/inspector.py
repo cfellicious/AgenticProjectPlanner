@@ -34,6 +34,7 @@ from config import (
     load_dotenv,
     mock_reviewer_names,
 )
+from obsidian import collect_obsidian_context, render_obsidian_context
 from planner import (
     DynamicQuestion,
     append_review_clarifications,
@@ -90,6 +91,14 @@ def write_json(path: Path, payload: Dict[str, object]) -> None:
 
 def _as_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_int(value: str, default: int, minimum: int = 0) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        return default
+    return max(parsed, minimum)
 
 
 @dataclass(frozen=True)
@@ -977,6 +986,7 @@ def _run_review_iterations(
     ask_review_clarifications: bool,
     review_context_md: str = "",
     review_context_artifact: Path | None = None,
+    extra_artifacts: Dict[str, Path] | None = None,
     config_file: Path | None = None,
 ) -> Path:
     config = env_config(config_file=config_file)
@@ -997,6 +1007,11 @@ def _run_review_iterations(
         artifacts = manifest["artifacts"]
         if isinstance(artifacts, dict):
             artifacts["related_version_context"] = str(review_context_artifact)
+    if extra_artifacts:
+        artifacts = manifest["artifacts"]
+        if isinstance(artifacts, dict):
+            for name, artifact_path in extra_artifacts.items():
+                artifacts[name] = str(artifact_path)
     write_json(run_dir / "run_manifest.json", manifest)
 
     answered_review_questions: set[str] = set()
@@ -1101,13 +1116,31 @@ def _run_review_iterations(
     return final_path
 
 
+def _load_obsidian_context_artifact(
+    *,
+    idea_file: str,
+    run_dir: Path,
+    max_depth: int,
+    max_notes: int,
+) -> tuple[str, Path]:
+    seed_file = Path(idea_file).expanduser()
+    contexts = collect_obsidian_context(seed_file, max_depth=max_depth, max_notes=max_notes)
+    rendered = render_obsidian_context(contexts, seed_file)
+    artifact_path = run_dir / "obsidian_context.md"
+    write_text(artifact_path, rendered)
+    print(f"Obsidian idea context written: {artifact_path}")
+    return rendered, artifact_path
+
+
 def run(
     idea: str,
     iterations: int,
     output_root: Path,
     config_file: Path | None = None,
     workflow: str = "idea-to-plan-with-architect-review",
+    obsidian_idea_file: str = "",
 ) -> Path:
+    config = env_config(config_file=config_file)
     answers: Dict[str, str] = {}
     print("Answer clarifying questions before the plan is generated.")
     for q in generate_questions(idea):
@@ -1128,6 +1161,17 @@ def run(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     current_plan = build_initial_plan(idea, answers)
+    extra_artifacts: Dict[str, Path] = {}
+    selected_obsidian_file = obsidian_idea_file.strip() or config.get("obsidian_idea_file", "").strip()
+    if selected_obsidian_file:
+        obsidian_context, obsidian_artifact = _load_obsidian_context_artifact(
+            idea_file=selected_obsidian_file,
+            run_dir=run_dir,
+            max_depth=_as_int(config.get("obsidian_max_depth", "1"), default=1),
+            max_notes=_as_int(config.get("obsidian_max_notes", "12"), default=12, minimum=1),
+        )
+        current_plan = f"{current_plan.rstrip()}\n\n{obsidian_context}"
+        extra_artifacts["obsidian_context"] = obsidian_artifact
     initial_plan_path = run_dir / "initial_plan.md"
     write_text(initial_plan_path, current_plan)
     print(f"\nInitial plan written: {initial_plan_path}")
@@ -1141,11 +1185,18 @@ def run(
         workflow=workflow,
         initial_artifact=initial_plan_path,
         ask_review_clarifications=True,
+        extra_artifacts=extra_artifacts,
         config_file=config_file,
     )
 
 
-def run_research(topic: str, iterations: int, output_root: Path, config_file: Path | None = None) -> Path:
+def run_research(
+    topic: str,
+    iterations: int,
+    output_root: Path,
+    config_file: Path | None = None,
+    obsidian_idea_file: str = "",
+) -> Path:
     config = env_config(config_file=config_file)
     static_questions = generate_research_questions(topic)
     dynamic_error = ""
@@ -1177,6 +1228,17 @@ def run_research(topic: str, iterations: int, output_root: Path, config_file: Pa
 
     current_plan = build_initial_research_plan(topic, answers)
     current_plan = _append_discovery_questions_context(current_plan, static_questions, dynamic_questions)
+    extra_artifacts: Dict[str, Path] = {}
+    selected_obsidian_file = obsidian_idea_file.strip() or config.get("obsidian_idea_file", "").strip()
+    if selected_obsidian_file:
+        obsidian_context, obsidian_artifact = _load_obsidian_context_artifact(
+            idea_file=selected_obsidian_file,
+            run_dir=run_dir,
+            max_depth=_as_int(config.get("obsidian_max_depth", "1"), default=1),
+            max_notes=_as_int(config.get("obsidian_max_notes", "12"), default=12, minimum=1),
+        )
+        current_plan = f"{current_plan.rstrip()}\n\n{obsidian_context}"
+        extra_artifacts["obsidian_context"] = obsidian_artifact
     initial_plan_path = run_dir / "initial_plan.md"
     write_text(initial_plan_path, current_plan)
     questions_path = run_dir / "discovery_questions.md"
@@ -1196,6 +1258,7 @@ def run_research(topic: str, iterations: int, output_root: Path, config_file: Pa
         workflow="research-to-plan-with-review",
         initial_artifact=initial_plan_path,
         ask_review_clarifications=False,
+        extra_artifacts=extra_artifacts,
         config_file=config_file,
     )
     manifest_path = run_dir / "run_manifest.json"
@@ -1287,6 +1350,11 @@ def parse_args() -> argparse.Namespace:
         default=cfg["output_dir"],
         help="Output root directory for generated markdown artifacts.",
     )
+    parser.add_argument(
+        "--obsidian-idea-file",
+        default=cfg.get("obsidian_idea_file", ""),
+        help="Optional path to a seed Obsidian markdown note for idea context.",
+    )
     args = parser.parse_args()
     args.config_file = config_file
     return args
@@ -1300,9 +1368,9 @@ def main() -> None:
     if args.plan_file:
         run_plan_review(Path(args.plan_file), args.iterations, Path(args.output), args.config_file)
     elif args.research:
-        run_research(args.research, args.iterations, Path(args.output), args.config_file)
+        run_research(args.research, args.iterations, Path(args.output), args.config_file, args.obsidian_idea_file)
     else:
-        run(args.idea, args.iterations, Path(args.output), args.config_file)
+        run(args.idea, args.iterations, Path(args.output), args.config_file, obsidian_idea_file=args.obsidian_idea_file)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ from inspector import (
     run,
     run_plan_review,
 )
+from obsidian import collect_obsidian_context, render_obsidian_context
 from config import configured_arbitrator_spec, configured_reviewer_specs, default_config_path, env_config
 from planner import (
     QUESTION_BANK,
@@ -150,6 +151,29 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(len(suggestions), 1)
         self.assertEqual(merged[: len(static_questions)], static_questions)
         self.assertIn("What field-specific search keywords should be included?", merged)
+
+    def test_obsidian_context_collects_seed_and_linked_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "Vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            idea = vault / "Idea.md"
+            idea.write_text(
+                "# Idea Note\n\n#idea\nBuild the core workflow.\n\nSee [[Feature A]] and [[Risks|risk notes]].",
+                encoding="utf-8",
+            )
+            feature = vault / "Feature A.md"
+            feature.write_text("# Feature A\n\n#implementation\nShip the MVP feature.", encoding="utf-8")
+            risks = vault / "Risks.md"
+            risks.write_text("# Risks\n\n#risk\nWatch for scope creep.", encoding="utf-8")
+
+            contexts = collect_obsidian_context(idea, max_depth=1, max_notes=4)
+            rendered = render_obsidian_context(contexts, idea)
+
+        self.assertEqual([context.title for context in contexts], ["Idea Note", "Feature A", "Risks"])
+        self.assertIn("#idea", contexts[0].tags)
+        self.assertIn("Feature A", contexts[0].outgoing_links)
+        self.assertIn("Obsidian Idea Context", rendered)
+        self.assertIn("Ship the MVP feature", rendered)
 
     def test_mock_research_question_planner_adds_validated_questions(self) -> None:
         config = env_config()
@@ -661,7 +685,13 @@ class WorkflowTests(unittest.TestCase):
             try:
                 os.chdir(tmp)
                 Path("inspector.new-idea.config.json").write_text(
-                    json.dumps({"default_iterations": 4, "output_dir": "new-output"}),
+                    json.dumps(
+                        {
+                            "default_iterations": 4,
+                            "output_dir": "new-output",
+                            "obsidian_idea_file": "idea.md",
+                        }
+                    ),
                     encoding="utf-8",
                 )
                 Path("inspector.existing-plan.config.json").write_text(
@@ -683,6 +713,7 @@ class WorkflowTests(unittest.TestCase):
 
                 self.assertEqual(idea_args.iterations, 4)
                 self.assertEqual(idea_args.output, "new-output")
+                self.assertEqual(idea_args.obsidian_idea_file, "idea.md")
                 self.assertEqual(idea_args.config_file, Path("inspector.new-idea.config.json"))
                 self.assertEqual(existing_args.iterations, 1)
                 self.assertEqual(existing_args.output, "existing-output")
@@ -880,10 +911,17 @@ class WorkflowTests(unittest.TestCase):
             "Use PostgreSQL with tenant-scoped entities, ownership indexes, migrations, and rollback scripts.",
         ]
         with tempfile.TemporaryDirectory() as tmp:
-            final_path = run("AI billing API platform", 1, Path(tmp))
+            obsidian_note = Path(tmp) / "billing-idea.md"
+            obsidian_note.write_text(
+                "# Billing Idea\n\n#idea\nObsidian says v1 should prioritize invoice reconciliation.",
+                encoding="utf-8",
+            )
+
+            final_path = run("AI billing API platform", 1, Path(tmp), obsidian_idea_file=str(obsidian_note))
             run_dir = final_path.parent
 
             self.assertTrue((run_dir / "initial_plan.md").exists())
+            self.assertTrue((run_dir / "obsidian_context.md").exists())
             self.assertTrue((run_dir / "run_manifest.json").exists())
             self.assertTrue((run_dir / "iteration_01" / "software-architect_review.md").exists())
             self.assertTrue((run_dir / "iteration_01" / "security-analyst_review.md").exists())
@@ -900,8 +938,12 @@ class WorkflowTests(unittest.TestCase):
             manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["idea"], "AI billing API platform")
             self.assertEqual(manifest["product_name"], "PlanPilot")
+            self.assertIn("obsidian_context", manifest["artifacts"])
             self.assertIn("risks", manifest["artifacts"])
             self.assertTrue(run_dir.name.endswith("_planpilot"))
+            initial_plan = (run_dir / "initial_plan.md").read_text(encoding="utf-8")
+            self.assertIn("Obsidian Idea Context", initial_plan)
+            self.assertIn("invoice reconciliation", initial_plan)
             final_plan = (run_dir / "final_plan.md").read_text(encoding="utf-8")
             self.assertIn("Review-Driven User Clarifications", final_plan)
             self.assertIn("Only account owners can mutate resources", final_plan)

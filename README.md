@@ -22,6 +22,12 @@ Start from a research topic or product hypothesis:
 python3 src/inspector.py --research "Research whether a privacy-first photo sharing app is viable" --iterations 2
 ```
 
+Add Obsidian idea-note context:
+
+```bash
+python3 src/inspector.py --idea "A B2B billing platform for freelancers" --obsidian-idea-file ~/Vault/Ideas/Billing.md
+```
+
 ## What it does
 
 The project supports three workflows:
@@ -75,6 +81,20 @@ Questions are then displayed at the right level. Non-technical users can answer 
 The discovery flow also asks for a product, workflow, and monetization explanation in no fewer than 10 sentences. This gives reviewer agents enough context to detect scope mismatches and produce a useful implementation plan instead of relying on a short title.
 
 The discovery flow asks for the planned product name. Run output directories use that product name when available, for example `output/20260602_120000_planpilot/`, instead of using the raw idea text.
+
+## Obsidian idea context
+
+You can point the inspector at a single Obsidian markdown note that represents the idea:
+
+```env
+INSPECTOR_OBSIDIAN_IDEA_FILE=/home/you/Vault/Ideas/My Idea.md
+INSPECTOR_OBSIDIAN_MAX_DEPTH=1
+INSPECTOR_OBSIDIAN_MAX_NOTES=12
+```
+
+The runtime reads that seed note, extracts `[[wiki links]]`, tags, headings, and a bounded excerpt, then resolves linked markdown notes from the same Obsidian vault or folder tree. It writes `obsidian_context.md` in the run directory and appends that context to `initial_plan.md` before reviewer agents run.
+
+Use depth `1` for most implementation planning. Depth `2` can be useful when idea notes link to feature notes that link to risk, customer, or architecture notes. Higher depth usually adds noise.
 
 The discovery flow also asks explicit gap-filling product questions before planning:
 
