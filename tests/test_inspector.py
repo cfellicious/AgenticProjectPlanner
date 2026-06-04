@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from inspector import (
+    FINAL_DISCOVERY_CONTEXT_QUESTION,
     _apply_technical_reviewer_catalog_update,
     _build_runtime_agents,
     _build_runtime_agents_for_plan,
@@ -22,6 +23,7 @@ from inspector import (
     _shared_prompt_context,
     _review_artifact_name,
     build_negative_reference,
+    collect_final_discovery_context,
     parse_args,
     resolve_answer,
     run,
@@ -261,6 +263,18 @@ class PlannerTests(unittest.TestCase):
 
         self.assertEqual(product_name_from_answers("Fallback Idea", {question: "LensHub"}), "LensHub")
         self.assertEqual(product_name_from_answers("Fallback Idea", {question: "not sure"}), "Fallback Idea")
+
+    @patch("inspector.input")
+    def test_final_discovery_context_is_optional_and_included_when_specific(self, mock_input) -> None:
+        answers: dict[str, str] = {}
+        mock_input.side_effect = ["Focus reviewers on reducing manual operations risk."]
+
+        collect_final_discovery_context("Ops planning app", answers)
+
+        self.assertEqual(
+            answers[FINAL_DISCOVERY_CONTEXT_QUESTION],
+            "Focus reviewers on reducing manual operations risk.",
+        )
 
     def test_review_comments_generate_user_follow_up_questions(self) -> None:
         review = """
@@ -1056,6 +1070,7 @@ class WorkflowTests(unittest.TestCase):
             "B2B entities: org/project/task",
             "Provider cap is $1k/mo",
             "Idempotent billing writes and daily reconciliation",
+            "Prioritize low manual operations risk and clear incident recovery paths.",
             "Only account owners can mutate resources; non-owners get 404 for private resources.",
             "Retain customer metadata for seven years where legally required; export/delete user-owned content on request.",
             "The app should feel fast when viewing galleries and liking photos; 5k users in year one.",
@@ -1095,6 +1110,7 @@ class WorkflowTests(unittest.TestCase):
             initial_plan = (run_dir / "initial_plan.md").read_text(encoding="utf-8")
             self.assertIn("Obsidian Idea Context", initial_plan)
             self.assertIn("invoice reconciliation", initial_plan)
+            self.assertIn("Prioritize low manual operations risk", initial_plan)
             final_plan = (run_dir / "final_plan.md").read_text(encoding="utf-8")
             self.assertIn("Review-Driven User Clarifications", final_plan)
             self.assertIn("Only account owners can mutate resources", final_plan)

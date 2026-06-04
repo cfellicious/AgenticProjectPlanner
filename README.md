@@ -83,6 +83,8 @@ The discovery flow also asks for a product, workflow, and monetization explanati
 
 The discovery flow asks for the planned product name. Run output directories use that product name when available, for example `output/20260602_120000_planpilot/`, instead of using the raw idea text.
 
+At the end of idea or research data collection, the CLI asks for optional final context before generating the initial plan. Use this to add case-specific pain points, corrections, constraints, scope decisions, or assumptions that should be visible to reviewer agents and the arbitrator.
+
 ## Obsidian idea context
 
 You can point the inspector at a single Obsidian markdown note that represents the idea:

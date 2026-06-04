@@ -66,6 +66,12 @@ def prompt_user(question: str) -> str:
     return answer or "Not specified"
 
 
+FINAL_DISCOVERY_CONTEXT_QUESTION = (
+    "Before I generate the initial plan, is there any extra context, correction, constraint, "
+    "pain point, or decision you want the reviewers and arbitrator to know?"
+)
+
+
 def resolve_answer(idea: str, question: str, answer: str) -> str:
     if not wants_agent_guidance(answer):
         return answer
@@ -79,6 +85,14 @@ def resolve_answer(idea: str, question: str, answer: str) -> str:
     if confirmation:
         return confirmation
     return guidance
+
+
+def collect_final_discovery_context(subject: str, answers: Dict[str, str]) -> None:
+    answer = prompt_user(FINAL_DISCOVERY_CONTEXT_QUESTION)
+    resolved = resolve_answer(subject, FINAL_DISCOVERY_CONTEXT_QUESTION, answer)
+    if should_ask_follow_up(resolved):
+        return
+    answers[FINAL_DISCOVERY_CONTEXT_QUESTION] = resolved
 
 
 def write_text(path: Path, content: str) -> None:
@@ -1714,6 +1728,7 @@ def run(
             follow_up_answer = prompt_user(display_question_for_user(follow_up, answers))
             answers[follow_up] = resolve_answer(idea, follow_up, follow_up_answer)
 
+    collect_final_discovery_context(idea, answers)
     product_name = product_name_from_answers(idea, answers)
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = output_root / f"{timestamp}_{slugify(product_name)[:40]}"
@@ -1785,6 +1800,7 @@ def run_research(
             follow_up_answer = prompt_user(display_question_for_user(follow_up, answers))
             answers[follow_up] = resolve_answer(topic, follow_up, follow_up_answer)
 
+    collect_final_discovery_context(topic, answers)
     project_name = research_project_name_from_answers(topic, answers)
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = output_root / f"{timestamp}_{slugify(project_name)[:40]}_research"
