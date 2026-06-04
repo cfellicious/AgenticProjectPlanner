@@ -55,6 +55,7 @@ from planner import (
     research_project_name_from_answers,
     should_ask_follow_up,
     slugify,
+    user_knowledge_level,
     wants_agent_guidance,
 )
 
@@ -961,6 +962,8 @@ def _selection_prompt(idea: str, workflow: str, plan_md: str, catalog: List[Dict
                 "name": spec.get("name", ""),
                 "category": spec.get("category", "default"),
                 "active_by_default": _as_bool(str(spec.get("active", True))),
+                "user_forced_active": _as_bool(str(spec.get("user_forced_active", False))),
+                "user_disabled": _as_bool(str(spec.get("user_disabled", False))),
                 "activate_when": spec.get("activate_when", ""),
                 "prompt": spec.get("prompt", spec.get("persona", "")),
             }
@@ -972,6 +975,8 @@ def _selection_prompt(idea: str, workflow: str, plan_md: str, catalog: List[Dict
         "- Select reviewers by exact name from the catalog only.\n"
         "- Prefer the smallest panel that covers material product, engineering, delivery, risk, and research concerns.\n"
         "- Do not select a specialist just because it exists. Select it only when the idea makes that specialty materially relevant.\n"
+        "- Never select reviewers where user_disabled is true.\n"
+        "- Prefer including reviewers where user_forced_active is true unless they are impossible for the workflow.\n"
         "- If the idea has no persistent data, database, reporting, data migration, analytics, or stored user resources, do not select a database/data expert.\n"
         "- If the idea has no payments, invoices, subscriptions, refunds, commissions, or money movement, do not select a billing/finance expert.\n"
         "- If the idea has no AI/ML behavior, do not select an AI/ML expert.\n"
@@ -1134,6 +1139,11 @@ def _heuristic_reviewer_names(idea: str, plan_md: str, catalog: List[Dict[str, s
         name_l = name.lower()
         category = spec.get("category", "").lower()
         active = _as_bool(str(spec.get("active", True)))
+        if _as_bool(str(spec.get("user_disabled", False))):
+            continue
+        if _as_bool(str(spec.get("user_forced_active", False))):
+            selected.append(name)
+            continue
         include = active and category != "optional"
         if "database" in name_l or "data engineer" in name_l:
             include = has_any(database_markers) and not has_any(no_data_markers)
@@ -1190,7 +1200,19 @@ def _select_reviewer_specs(
             arbitrator_spec=arbitrator_spec,
         )
         by_name = {spec["name"]: spec for spec in catalog}
-        selected_specs = [by_name[name] for name in selected_names if name in by_name]
+        selected_specs = [
+            by_name[name]
+            for name in selected_names
+            if name in by_name and not _as_bool(str(by_name[name].get("user_disabled", False)))
+        ]
+        forced_specs = [
+            spec
+            for spec in catalog
+            if _as_bool(str(spec.get("user_forced_active", False)))
+            and not _as_bool(str(spec.get("user_disabled", False)))
+            and spec not in selected_specs
+        ]
+        selected_specs = forced_specs + selected_specs
         if not selected_specs:
             raise ValueError("selector did not return any valid reviewer names.")
         return ReviewerSelection(selected_specs, concrete_plan, rationale, raw, "arbitrator")
@@ -1235,6 +1257,113 @@ def _render_reviewer_selection(selection: ReviewerSelection, catalog: List[Dict[
     return "\n".join(lines).strip() + "\n"
 
 
+def _render_reviewer_catalog_for_terminal(catalog: List[Dict[str, str]]) -> str:
+    lines = ["Current reviewer catalog:"]
+    for index, spec in enumerate(catalog, start=1):
+        name = spec.get("name", f"Reviewer {index}")
+        category = spec.get("category", "default")
+        active = "active" if _as_bool(str(spec.get("active", True))) else "inactive"
+        activate_when = spec.get("activate_when", "").strip()
+        detail = f" - {activate_when}" if activate_when else ""
+        lines.append(f"{index}. {name} [{category}, {active}]{detail}")
+    return "\n".join(lines)
+
+
+def _catalog_spec_lookup(catalog: List[Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    lookup: Dict[str, Dict[str, str]] = {}
+    for index, spec in enumerate(catalog, start=1):
+        lookup[str(index)] = spec
+        lookup[spec.get("name", "").strip().lower()] = spec
+    return lookup
+
+
+def _parse_catalog_token(token: str, catalog: List[Dict[str, str]]) -> tuple[str, Dict[str, str] | None]:
+    cleaned = token.strip()
+    if not cleaned:
+        return "", None
+    action = "activate"
+    if cleaned[0] in {"+", "-"}:
+        action = "deactivate" if cleaned[0] == "-" else "activate"
+        cleaned = cleaned[1:].strip()
+    lookup = _catalog_spec_lookup(catalog)
+    return action, lookup.get(cleaned.lower())
+
+
+def _apply_technical_reviewer_catalog_update(catalog: List[Dict[str, str]], answer: str) -> List[Dict[str, str]]:
+    raw = answer.strip()
+    if not raw:
+        return catalog
+
+    updated = [dict(spec) for spec in catalog]
+    by_name = {spec.get("name", ""): spec for spec in updated}
+
+    if raw.lower().startswith("only:"):
+        selected: set[str] = set()
+        for token in raw[5:].split(","):
+            _action, spec = _parse_catalog_token(token, catalog)
+            if spec is not None:
+                selected.add(spec.get("name", ""))
+        if not selected:
+            return catalog
+        for spec in updated:
+            if spec.get("name", "") in selected:
+                spec["active"] = "true"
+                spec["user_forced_active"] = "true"
+                spec.pop("user_disabled", None)
+            else:
+                spec["active"] = "false"
+                spec["user_disabled"] = "true"
+                spec.pop("user_forced_active", None)
+        return updated
+
+    changed = False
+    for token in raw.split(","):
+        action, spec = _parse_catalog_token(token, catalog)
+        if spec is None:
+            continue
+        target = by_name.get(spec.get("name", ""))
+        if target is None:
+            continue
+        if action == "deactivate":
+            target["active"] = "false"
+            target["user_disabled"] = "true"
+            target.pop("user_forced_active", None)
+        else:
+            target["active"] = "true"
+            target["user_forced_active"] = "true"
+            target.pop("user_disabled", None)
+        changed = True
+    return updated if changed else catalog
+
+
+def _maybe_update_reviewer_catalog_for_technical_user(
+    *,
+    config: Dict[str, str],
+    answers: Dict[str, str],
+) -> List[Dict[str, str]] | None:
+    if not _as_bool(config.get("dynamic_reviewer_selection", "false")):
+        return None
+    if user_knowledge_level(answers) != "technical":
+        return None
+
+    catalog = _reviewer_catalog_for_selection(config)
+    if not catalog:
+        return None
+
+    print("\nTechnical reviewer catalog review")
+    print(_render_reviewer_catalog_for_terminal(catalog))
+    answer = prompt_user(
+        "Press Enter to keep this catalog for arbitrator selection, or update it for this run.\n"
+        "Use '+Name' to activate, '-Name' to deactivate, or 'only: Name, Name' to constrain active reviewers."
+    )
+    updated = _apply_technical_reviewer_catalog_update(catalog, "" if answer == "Not specified" else answer)
+    if updated != catalog:
+        print("Reviewer catalog updated for this run before arbitrator selection.")
+    else:
+        print("Reviewer catalog kept unchanged.")
+    return updated
+
+
 def _build_runtime_agents_for_plan(
     config: Dict[str, str],
     *,
@@ -1242,6 +1371,7 @@ def _build_runtime_agents_for_plan(
     workflow: str,
     plan_md: str,
     selection_artifact: Path | None = None,
+    reviewer_catalog_override: List[Dict[str, str]] | None = None,
 ):
     if not _as_bool(config.get("dynamic_reviewer_selection", "false")):
         reviewers, consolidator, runtime_mode = _build_runtime_agents(config)
@@ -1253,7 +1383,10 @@ def _build_runtime_agents_for_plan(
             source="static",
         )
         if selection_artifact is not None:
-            write_text(selection_artifact, _render_reviewer_selection(selection, _reviewer_catalog_for_selection(config)))
+            write_text(
+                selection_artifact,
+                _render_reviewer_selection(selection, reviewer_catalog_override or _reviewer_catalog_for_selection(config)),
+            )
         return reviewers, consolidator, runtime_mode, selection
 
     mode = config["agent_mode"].lower()
@@ -1264,7 +1397,7 @@ def _build_runtime_agents_for_plan(
         backoff_seconds=float(config["http_backoff_seconds"]),
     )
     arbitrator_spec = configured_arbitrator_spec(config) or _default_arbitrator_spec(config)
-    catalog = _reviewer_catalog_for_selection(config)
+    catalog = reviewer_catalog_override or _reviewer_catalog_for_selection(config)
     selection = _select_reviewer_specs(
         idea=idea,
         workflow=workflow,
@@ -1395,6 +1528,7 @@ def _run_review_iterations(
     review_context_artifact: Path | None = None,
     extra_artifacts: Dict[str, Path] | None = None,
     config_file: Path | None = None,
+    reviewer_catalog_override: List[Dict[str, str]] | None = None,
 ) -> Path:
     config = env_config(config_file=config_file)
     selection_path = run_dir / "reviewer_selection.md"
@@ -1404,6 +1538,7 @@ def _run_review_iterations(
         workflow=workflow,
         plan_md=current_plan,
         selection_artifact=selection_path,
+        reviewer_catalog_override=reviewer_catalog_override,
     )
     reviewer_names = [r.name for r in reviewers]
     manifest: Dict[str, object] = {
@@ -1599,6 +1734,10 @@ def run(
     initial_plan_path = run_dir / "initial_plan.md"
     write_text(initial_plan_path, current_plan)
     print(f"\nInitial plan written: {initial_plan_path}")
+    reviewer_catalog_override = _maybe_update_reviewer_catalog_for_technical_user(
+        config=config,
+        answers=answers,
+    )
 
     return _run_review_iterations(
         current_plan=current_plan,
@@ -1611,6 +1750,7 @@ def run(
         ask_review_clarifications=True,
         extra_artifacts=extra_artifacts,
         config_file=config_file,
+        reviewer_catalog_override=reviewer_catalog_override,
     )
 
 
@@ -1672,6 +1812,10 @@ def run_research(
     )
     print(f"\nInitial research plan written: {initial_plan_path}")
     print(f"Research discovery questions written: {questions_path}")
+    reviewer_catalog_override = _maybe_update_reviewer_catalog_for_technical_user(
+        config=config,
+        answers=answers,
+    )
 
     final_path = _run_review_iterations(
         current_plan=current_plan,
@@ -1684,6 +1828,7 @@ def run_research(
         ask_review_clarifications=False,
         extra_artifacts=extra_artifacts,
         config_file=config_file,
+        reviewer_catalog_override=reviewer_catalog_override,
     )
     manifest_path = run_dir / "run_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

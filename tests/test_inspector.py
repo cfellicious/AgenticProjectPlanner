@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from inspector import (
+    _apply_technical_reviewer_catalog_update,
     _build_runtime_agents,
     _build_runtime_agents_for_plan,
     _compose_agent_prompt,
@@ -890,6 +891,67 @@ class WorkflowTests(unittest.TestCase):
             [reviewer.name for reviewer in reviewers],
             ["Software Architect", "Billing and Finance Reviewer"],
         )
+
+    def test_technical_catalog_update_can_constrain_active_reviewers(self) -> None:
+        catalog = [
+            {"name": "Software Architect", "category": "default", "active": "true", "provider": "mock"},
+            {"name": "Database Engineer", "category": "default", "active": "true", "provider": "mock"},
+            {"name": "Security Analyst", "category": "default", "active": "true", "provider": "mock"},
+        ]
+
+        updated = _apply_technical_reviewer_catalog_update(catalog, "only: Software Architect, Security Analyst")
+
+        self.assertEqual(
+            [(spec["name"], spec["active"]) for spec in updated],
+            [
+                ("Software Architect", "true"),
+                ("Database Engineer", "false"),
+                ("Security Analyst", "true"),
+            ],
+        )
+
+    def test_dynamic_reviewer_selection_uses_technical_catalog_override(self) -> None:
+        config = env_config()
+        config.update(
+            {
+                "agent_mode": "mock",
+                "dynamic_reviewer_selection": "true",
+                "reviewers": json.dumps(
+                    [
+                        {
+                            "name": "Software Architect",
+                            "category": "default",
+                            "active": True,
+                            "provider": "mock",
+                            "prompt": "Focus on architecture.",
+                        },
+                        {
+                            "name": "Billing and Finance Reviewer",
+                            "category": "optional",
+                            "active": False,
+                            "provider": "mock",
+                            "activate_when": "Use for payments and subscriptions.",
+                            "prompt": "Focus on billing.",
+                        },
+                    ]
+                ),
+                "arbitrator": json.dumps({"name": "Arbitrator", "provider": "mock"}),
+            }
+        )
+        override = _apply_technical_reviewer_catalog_update(
+            json.loads(config["reviewers"]),
+            "only: Software Architect",
+        )
+
+        reviewers, _consolidator, _runtime_mode, _selection = _build_runtime_agents_for_plan(
+            config,
+            idea="A subscription billing portal with invoices and refunds",
+            workflow="idea-to-plan-with-architect-review",
+            plan_md="# Plan\n\nUsers manage subscriptions, invoices, payment failure handling, and refunds.",
+            reviewer_catalog_override=override,
+        )
+
+        self.assertEqual([reviewer.name for reviewer in reviewers], ["Software Architect"])
 
     def test_review_artifact_names_are_slugged_and_unique(self) -> None:
         used: set[str] = set()
