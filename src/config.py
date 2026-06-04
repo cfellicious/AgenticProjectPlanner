@@ -102,6 +102,7 @@ def env_config(workflow: str | None = None, config_file: str | Path | None = Non
         "reviewers": _string_config_value(file_config.get("reviewers", "")),
         "arbitrator": _string_config_value(file_config.get("arbitrator", "")),
         "research_question_planner": _string_config_value(file_config.get("research_question_planner", "")),
+        "dynamic_reviewer_selection": _string_config_value(file_config.get("dynamic_reviewer_selection", "false")),
         "obsidian_idea_file": _string_config_value(file_config.get("obsidian_idea_file", "")),
         "obsidian_max_depth": _string_config_value(file_config.get("obsidian_max_depth", "1")),
         "obsidian_max_notes": _string_config_value(file_config.get("obsidian_max_notes", "12")),
@@ -130,6 +131,7 @@ def env_config(workflow: str | None = None, config_file: str | Path | None = Non
         "reviewers": os.getenv("INSPECTOR_REVIEWERS"),
         "arbitrator": os.getenv("INSPECTOR_ARBITRATOR"),
         "research_question_planner": os.getenv("INSPECTOR_RESEARCH_QUESTION_PLANNER"),
+        "dynamic_reviewer_selection": os.getenv("INSPECTOR_DYNAMIC_REVIEWER_SELECTION"),
         "obsidian_idea_file": os.getenv("INSPECTOR_OBSIDIAN_IDEA_FILE"),
         "obsidian_max_depth": os.getenv("INSPECTOR_OBSIDIAN_MAX_DEPTH"),
         "obsidian_max_notes": os.getenv("INSPECTOR_OBSIDIAN_MAX_NOTES"),
@@ -158,7 +160,7 @@ def mock_reviewer_names(config: Dict[str, str]) -> List[str]:
     return [name for name in names if name]
 
 
-def configured_reviewer_specs(config: Dict[str, str]) -> List[Dict[str, str]]:
+def configured_reviewer_catalog_specs(config: Dict[str, str]) -> List[Dict[str, str]]:
     raw = config.get("reviewers", "").strip()
     if not raw:
         return []
@@ -175,8 +177,6 @@ def configured_reviewer_specs(config: Dict[str, str]) -> List[Dict[str, str]]:
     for index, item in enumerate(parsed, start=1):
         if not isinstance(item, dict):
             raise ValueError(f"INSPECTOR_REVIEWERS item {index} must be an object.")
-        if not _is_active_config_value(item.get("active", True)):
-            continue
         spec = {str(key): str(value) for key, value in item.items() if value is not None}
         provider = _normalize_provider(spec.get("provider", ""))
         if not provider:
@@ -184,6 +184,17 @@ def configured_reviewer_specs(config: Dict[str, str]) -> List[Dict[str, str]]:
         spec["provider"] = provider
         spec.setdefault("name", f"{provider}-{index}")
         specs.append(spec)
+    return specs
+
+
+def configured_reviewer_specs(config: Dict[str, str]) -> List[Dict[str, str]]:
+    if not config.get("reviewers", "").strip():
+        return []
+    specs = [
+        spec
+        for spec in configured_reviewer_catalog_specs(config)
+        if _is_active_config_value(spec.get("active", True))
+    ]
     if not specs:
         raise ValueError("at least one reviewer must be configured.")
     return specs

@@ -1,6 +1,7 @@
 {
 "agent_mode": "live",
 "allow_mock_fallback": false,
+"dynamic_reviewer_selection": true,
 
 
 "openai_model": "gpt-5.4",
@@ -303,8 +304,9 @@
 "arbitrator": {
 "name": "Arbitrator",
 "active": true,
-"provider": "grok",
-"api_key_env": "GROK_API_KEY",
-"prompt": "Reconcile the active reviewer critiques into one implementation plan suitable for direct engineering execution. The final document must be concrete, sequenced, and implementation-ready. Merge duplicate concerns, resolve contradictions explicitly, and preserve justified dissent under Open Concerns. Do not drop relevant security, privacy, UX, DevOps, full-stack implementation, data, staffing, man-day estimates, performance, observability, rollback, or test requirements. Convert reviewer feedback into the final output contract structure. Every major concern from active reviewers must either be incorporated into the plan or explicitly listed under Open Concerns with a reason. Avoid generic recommendations. Prefer concrete tasks, dependencies, validation steps, and engineering decisions. If information is missing, make reasonable assumptions and list them explicitly."
+"provider": "openai",
+"api_key_env": "OPENAI_API_KEY",
+"model_env": "OPENAI_DEEP_MODEL",
+"prompt": "Reconcile the selected reviewer critiques into one implementation plan suitable for direct engineering execution. The final document must be concrete, sequenced, and implementation-ready. Merge duplicate concerns, resolve contradictions explicitly, and preserve justified dissent under Open Concerns. Do not drop relevant security, privacy, UX, DevOps, full-stack implementation, data, staffing, man-day estimates, performance, observability, rollback, or test requirements. Convert reviewer feedback into the final output contract structure. Every major concern from active reviewers must either be incorporated into the plan or explicitly listed under Open Concerns with a reason. Avoid generic recommendations. Prefer concrete tasks, dependencies, validation steps, and engineering decisions. If information is missing, make reasonable assumptions and list them explicitly."
 }
 }

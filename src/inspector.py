@@ -28,6 +28,7 @@ from config import (
     RUNTIME_PROMPT_COMPOSITION_FIELD,
     SHARED_PROMPT_FIELDS,
     configured_arbitrator_spec,
+    configured_reviewer_catalog_specs,
     configured_reviewer_specs,
     default_config_path,
     env_config,
@@ -912,6 +913,412 @@ def _build_configured_arbitrator(
     )
 
 
+@dataclass(frozen=True)
+class ReviewerSelection:
+    selected_specs: List[Dict[str, str]]
+    concrete_plan: str
+    rationale: Dict[str, str]
+    raw_response: str
+    source: str
+    error: str = ""
+
+
+def _reviewer_catalog_for_selection(config: Dict[str, str]) -> List[Dict[str, str]]:
+    configured_catalog = configured_reviewer_catalog_specs(config)
+    if configured_catalog:
+        return configured_catalog
+
+    live_specs = _legacy_live_reviewer_specs(config)
+    if live_specs:
+        return live_specs
+
+    mock_names = mock_reviewer_names(config)
+    if not mock_names:
+        mock_names = [persona["name"] for persona in DEFAULT_REVIEWER_PERSONAS]
+    persona_by_name = {persona["name"]: persona["prompt"] for persona in DEFAULT_REVIEWER_PERSONAS}
+    return [
+        {
+            "name": name,
+            "provider": "mock",
+            "category": "default",
+            "active": "true",
+            "prompt": persona_by_name.get(name, f"Focus on {name.lower()} concerns."),
+        }
+        for name in mock_names
+    ]
+
+
+def _active_selection_fallback(catalog: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    active = [spec for spec in catalog if _as_bool(str(spec.get("active", True)))]
+    return active or catalog
+
+
+def _selection_prompt(idea: str, workflow: str, plan_md: str, catalog: List[Dict[str, str]]) -> str:
+    rendered_catalog = []
+    for spec in catalog:
+        rendered_catalog.append(
+            {
+                "name": spec.get("name", ""),
+                "category": spec.get("category", "default"),
+                "active_by_default": _as_bool(str(spec.get("active", True))),
+                "activate_when": spec.get("activate_when", ""),
+                "prompt": spec.get("prompt", spec.get("persona", "")),
+            }
+        )
+    return (
+        "You are the high-capacity arbitrator planning a reviewer panel before expert review starts.\n"
+        "Read the user request and initial plan, form a concrete review strategy, and select only the experts needed.\n\n"
+        "Selection rules:\n"
+        "- Select reviewers by exact name from the catalog only.\n"
+        "- Prefer the smallest panel that covers material product, engineering, delivery, risk, and research concerns.\n"
+        "- Do not select a specialist just because it exists. Select it only when the idea makes that specialty materially relevant.\n"
+        "- If the idea has no persistent data, database, reporting, data migration, analytics, or stored user resources, do not select a database/data expert.\n"
+        "- If the idea has no payments, invoices, subscriptions, refunds, commissions, or money movement, do not select a billing/finance expert.\n"
+        "- If the idea has no AI/ML behavior, do not select an AI/ML expert.\n"
+        "- If the idea has no regulated, sensitive, child, health, finance, identity, legal, or strict retention data, do not select a privacy/compliance expert.\n"
+        "- If the idea has no public API, mobile clients, third-party integrations, or complex frontend/backend handoff, do not select an API contract specialist.\n"
+        "- Always include a general implementation/architecture reviewer unless no such expert exists.\n"
+        "- Return strict JSON only. Do not include markdown fences.\n\n"
+        "Return this shape exactly:\n"
+        "{"
+        "\"concrete_plan\":\"short concrete review strategy\","
+        "\"selected_reviewers\":[{\"name\":\"exact catalog name\",\"reason\":\"why needed\"}],"
+        "\"rejected_reviewers\":[{\"name\":\"exact catalog name\",\"reason\":\"why not needed\"}]"
+        "}\n\n"
+        f"Workflow: {workflow}\n"
+        f"User request: {idea}\n\n"
+        f"Reviewer catalog JSON:\n{json.dumps(rendered_catalog, indent=2)}\n\n"
+        f"Initial plan:\n{plan_md[:20000]}"
+    )
+
+
+def _parse_selection_json(text: str) -> tuple[str, Dict[str, str], List[str]]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    parsed = json.loads(cleaned)
+    if not isinstance(parsed, dict):
+        raise ValueError("selector response must be a JSON object.")
+    concrete_plan = str(parsed.get("concrete_plan", "")).strip()
+    selected_raw = parsed.get("selected_reviewers", [])
+    if not isinstance(selected_raw, list):
+        raise ValueError("selected_reviewers must be a JSON array.")
+    rationale: Dict[str, str] = {}
+    selected_names: List[str] = []
+    for item in selected_raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        reason = str(item.get("reason", "")).strip()
+        if not name:
+            continue
+        selected_names.append(name)
+        rationale[name] = reason
+    return concrete_plan, rationale, selected_names
+
+
+def _invoke_reviewer_selector(
+    *,
+    idea: str,
+    workflow: str,
+    plan_md: str,
+    catalog: List[Dict[str, str]],
+    config: Dict[str, str],
+    retry_cfg: RetryConfig,
+    arbitrator_spec: Dict[str, str],
+) -> tuple[str, Dict[str, str], List[str], str]:
+    provider = arbitrator_spec.get("provider", "mock")
+    prompt = _selection_prompt(idea, workflow, plan_md, catalog)
+
+    if provider == "mock":
+        names = _heuristic_reviewer_names(idea, plan_md, catalog)
+        return "Heuristic reviewer panel selected from the idea and initial plan.", {
+            name: "Selected by mock heuristic from reviewer role and plan signals." for name in names
+        }, names, json.dumps({"selected_reviewers": [{"name": name} for name in names]})
+
+    api_key = _api_key_for_spec(arbitrator_spec, config)
+    if not api_key:
+        raise ValueError(f"Reviewer selector '{arbitrator_spec.get('name', 'Arbitrator')}' is missing an API key.")
+
+    if provider in {"openai", "responses"}:
+        model = _model_for_spec(arbitrator_spec, config["openai_model"])
+        base_url = arbitrator_spec.get("base_url", config["openai_base_url"]).rstrip("/")
+        result = _post_json(
+            f"{base_url}/responses",
+            {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            {"model": model, "input": prompt},
+            retry_cfg,
+        )
+        raw = _extract_text_response(result)
+        concrete_plan, rationale, names = _parse_selection_json(raw)
+        return concrete_plan, rationale, names, raw
+
+    if provider == "anthropic":
+        model = _model_for_spec(arbitrator_spec, config["anthropic_model"])
+        base_url = arbitrator_spec.get("base_url", config["anthropic_base_url"]).rstrip("/")
+        result = _post_json(
+            f"{base_url}/messages",
+            {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            {"model": model, "max_tokens": 1600, "messages": [{"role": "user", "content": prompt}]},
+            retry_cfg,
+        )
+        raw = _extract_text_response(result)
+        concrete_plan, rationale, names = _parse_selection_json(raw)
+        return concrete_plan, rationale, names, raw
+
+    if provider in {"grok", "openai_chat", "chat_completions"}:
+        model = _model_for_spec(arbitrator_spec, config["grok_model"])
+        base_url = arbitrator_spec.get("base_url", config["grok_base_url"]).rstrip("/")
+        result = _post_json(
+            f"{base_url}/chat/completions",
+            {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "Return strict JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+            retry_cfg,
+        )
+        raw = _extract_text_response(result)
+        concrete_plan, rationale, names = _parse_selection_json(raw)
+        return concrete_plan, rationale, names, raw
+
+    raise ValueError(f"Reviewer selector uses unsupported provider '{provider}'.")
+
+
+def _heuristic_reviewer_names(idea: str, plan_md: str, catalog: List[Dict[str, str]]) -> List[str]:
+    searchable = f"{idea}\n{plan_md}".lower()
+    selected: List[str] = []
+
+    def has_any(markers: tuple[str, ...]) -> bool:
+        return any(marker in searchable for marker in markers)
+
+    no_data_markers = (
+        "no database",
+        "no persistent data",
+        "does not store",
+        "doesn't store",
+        "static website",
+        "static landing page",
+        "offline calculator",
+    )
+    database_markers = (
+        "database",
+        "postgres",
+        "mysql",
+        "sqlite",
+        "schema",
+        "migration",
+        "stored",
+        "persistent",
+        "reporting",
+        "analytics",
+    )
+    billing_markers = ("payment", "billing", "invoice", "subscription", "refund", "commission", "tax", "ledger")
+    ai_markers = (" ai ", "llm", "model", "embedding", "rag", "classification", "recommendation", "machine learning")
+    privacy_markers = ("personal", "sensitive", "health", "minor", "child", "identity", "gdpr", "ccpa", "retention")
+    api_markers = (" api", "mobile app", "third-party", "integration", "webhook", "public endpoint", "client")
+    performance_markers = ("high concurrency", "latency", "p95", "p99", "media processing", "background job", "scale")
+    support_markers = ("support", "admin", "incident", "manual override", "recovery", "customer complaint")
+    legal_markers = ("legal", "terms", "marketplace", "liability", "intellectual property", "contract")
+
+    for spec in catalog:
+        name = spec.get("name", "")
+        name_l = name.lower()
+        category = spec.get("category", "").lower()
+        active = _as_bool(str(spec.get("active", True)))
+        include = active and category != "optional"
+        if "database" in name_l or "data engineer" in name_l:
+            include = has_any(database_markers) and not has_any(no_data_markers)
+        elif "billing" in name_l or "finance" in name_l:
+            include = has_any(billing_markers)
+        elif "ai" in name_l or "ml" in name_l:
+            include = has_any(ai_markers)
+        elif "privacy" in name_l or "compliance" in name_l:
+            include = has_any(privacy_markers)
+        elif "api contract" in name_l:
+            include = has_any(api_markers)
+        elif "performance" in name_l:
+            include = has_any(performance_markers)
+        elif "support" in name_l:
+            include = has_any(support_markers)
+        elif "legal" in name_l:
+            include = has_any(legal_markers)
+        if include:
+            selected.append(name)
+
+    if not selected and catalog:
+        for spec in catalog:
+            name = spec.get("name", "")
+            if any(marker in name.lower() for marker in ("architect", "full stack", "implementation", "research problem")):
+                selected.append(name)
+                break
+    return selected or [catalog[0]["name"]]
+
+
+def _select_reviewer_specs(
+    *,
+    idea: str,
+    workflow: str,
+    plan_md: str,
+    catalog: List[Dict[str, str]],
+    config: Dict[str, str],
+    retry_cfg: RetryConfig,
+    arbitrator_spec: Dict[str, str],
+) -> ReviewerSelection:
+    if not catalog:
+        return ReviewerSelection([], "", {}, "", "static", "No reviewer catalog was available.")
+
+    if not _as_bool(config.get("dynamic_reviewer_selection", "false")):
+        return ReviewerSelection(_active_selection_fallback(catalog), "", {}, "", "static")
+
+    try:
+        concrete_plan, rationale, selected_names, raw = _invoke_reviewer_selector(
+            idea=idea,
+            workflow=workflow,
+            plan_md=plan_md,
+            catalog=catalog,
+            config=config,
+            retry_cfg=retry_cfg,
+            arbitrator_spec=arbitrator_spec,
+        )
+        by_name = {spec["name"]: spec for spec in catalog}
+        selected_specs = [by_name[name] for name in selected_names if name in by_name]
+        if not selected_specs:
+            raise ValueError("selector did not return any valid reviewer names.")
+        return ReviewerSelection(selected_specs, concrete_plan, rationale, raw, "arbitrator")
+    except Exception as exc:
+        fallback = _active_selection_fallback(catalog)
+        return ReviewerSelection(
+            fallback,
+            "Dynamic reviewer selection failed; using active reviewer fallback.",
+            {spec["name"]: "Fallback active reviewer." for spec in fallback},
+            "",
+            "fallback",
+            str(exc),
+        )
+
+
+def _render_reviewer_selection(selection: ReviewerSelection, catalog: List[Dict[str, str]]) -> str:
+    selected_names = {spec["name"] for spec in selection.selected_specs}
+    lines = [
+        "# Reviewer Selection",
+        "",
+        f"- Source: {selection.source}",
+        f"- Selected reviewers: {len(selection.selected_specs)}",
+    ]
+    if selection.error:
+        lines.append(f"- Selection error: {selection.error}")
+    if selection.concrete_plan:
+        lines.extend(["", "## Concrete Review Plan", selection.concrete_plan])
+    lines.extend(["", "## Selected Reviewers"])
+    for spec in selection.selected_specs:
+        name = spec["name"]
+        reason = selection.rationale.get(name, "Selected for this run.")
+        lines.append(f"- {name}: {reason}")
+    lines.extend(["", "## Available But Not Selected"])
+    for spec in catalog:
+        name = spec["name"]
+        if name in selected_names:
+            continue
+        reason = spec.get("activate_when", "").strip() or "Not selected for this request."
+        lines.append(f"- {name}: {reason}")
+    if selection.raw_response:
+        lines.extend(["", "## Raw Selector Response", "```json", selection.raw_response.strip(), "```"])
+    return "\n".join(lines).strip() + "\n"
+
+
+def _build_runtime_agents_for_plan(
+    config: Dict[str, str],
+    *,
+    idea: str,
+    workflow: str,
+    plan_md: str,
+    selection_artifact: Path | None = None,
+):
+    if not _as_bool(config.get("dynamic_reviewer_selection", "false")):
+        reviewers, consolidator, runtime_mode = _build_runtime_agents(config)
+        selection = ReviewerSelection(
+            selected_specs=[{"name": reviewer.name} for reviewer in reviewers],
+            concrete_plan="Dynamic reviewer selection is disabled; using the configured/static reviewer panel.",
+            rationale={reviewer.name: "Configured/static reviewer." for reviewer in reviewers},
+            raw_response="",
+            source="static",
+        )
+        if selection_artifact is not None:
+            write_text(selection_artifact, _render_reviewer_selection(selection, _reviewer_catalog_for_selection(config)))
+        return reviewers, consolidator, runtime_mode, selection
+
+    mode = config["agent_mode"].lower()
+    allow_mock_fallback = _as_bool(config["allow_mock_fallback"])
+    retry_cfg = RetryConfig(
+        timeout_seconds=float(config["http_timeout_seconds"]),
+        max_retries=int(config["http_max_retries"]),
+        backoff_seconds=float(config["http_backoff_seconds"]),
+    )
+    arbitrator_spec = configured_arbitrator_spec(config) or _default_arbitrator_spec(config)
+    catalog = _reviewer_catalog_for_selection(config)
+    selection = _select_reviewer_specs(
+        idea=idea,
+        workflow=workflow,
+        plan_md=plan_md,
+        catalog=catalog,
+        config=config,
+        retry_cfg=retry_cfg,
+        arbitrator_spec=arbitrator_spec,
+    )
+    if selection_artifact is not None:
+        write_text(selection_artifact, _render_reviewer_selection(selection, catalog))
+
+    selected_specs = selection.selected_specs
+    if mode == "mock":
+        selected_specs = [{**spec, "provider": "mock"} for spec in selected_specs]
+
+    shared_context = _shared_prompt_context(config)
+    reviewer_runtime_context = _runtime_prompt_composition_context(config, "reviewer")
+    arbitrator_runtime_context = _runtime_prompt_composition_context(config, "arbitrator")
+    use_live = mode == "live" or (mode == "auto" and any(spec.get("provider") != "mock" for spec in selected_specs))
+
+    if use_live:
+        try:
+            reviewers = [
+                _build_configured_reviewer(spec, config, retry_cfg, shared_context, reviewer_runtime_context)
+                for spec in selected_specs
+            ]
+            consolidator = _build_configured_arbitrator(
+                arbitrator_spec,
+                config,
+                retry_cfg,
+                shared_context,
+                arbitrator_runtime_context,
+            )
+            return reviewers, consolidator, "dynamic" if selection.source == "arbitrator" else selection.source, selection
+        except Exception:
+            if not allow_mock_fallback or mode == "live":
+                raise
+
+    mock_specs = [{**spec, "provider": "mock"} for spec in selected_specs]
+    reviewers = [
+        _build_configured_reviewer(spec, config, retry_cfg, "", "")
+        for spec in mock_specs
+    ]
+    consolidator = _build_configured_arbitrator(
+        {"name": arbitrator_spec.get("name", "Arbitrator"), "provider": "mock", "prompt": arbitrator_spec.get("prompt", "")},
+        config,
+        retry_cfg,
+        shared_context,
+        arbitrator_runtime_context,
+    )
+    return reviewers, consolidator, "mock-dynamic" if selection.source == "arbitrator" else "mock", selection
+
+
 def _build_runtime_agents(config: Dict[str, str]):
     mode = config["agent_mode"].lower()
     allow_mock_fallback = _as_bool(config["allow_mock_fallback"])
@@ -990,7 +1397,14 @@ def _run_review_iterations(
     config_file: Path | None = None,
 ) -> Path:
     config = env_config(config_file=config_file)
-    reviewers, consolidator, runtime_mode = _build_runtime_agents(config)
+    selection_path = run_dir / "reviewer_selection.md"
+    reviewers, consolidator, runtime_mode, reviewer_selection = _build_runtime_agents_for_plan(
+        config,
+        idea=idea,
+        workflow=workflow,
+        plan_md=current_plan,
+        selection_artifact=selection_path,
+    )
     reviewer_names = [r.name for r in reviewers]
     manifest: Dict[str, object] = {
         "idea": idea,
@@ -1001,8 +1415,18 @@ def _run_review_iterations(
         "agent_mode": runtime_mode,
         "reviewers": reviewer_names,
         "arbitrator": getattr(consolidator, "name", "Arbitrator"),
+        "reviewer_selection": {
+            "source": reviewer_selection.source,
+            "selected_reviewers": reviewer_names,
+            "error": reviewer_selection.error,
+        },
         "artifacts": {"initial_plan": str(initial_artifact)},
     }
+    artifacts = manifest["artifacts"]
+    if isinstance(artifacts, dict):
+        artifacts["reviewer_selection"] = str(selection_path)
+    print(f"Reviewer selection written: {selection_path}")
+    print(f"Selected reviewers: {', '.join(reviewer_names)}")
     if review_context_artifact is not None:
         artifacts = manifest["artifacts"]
         if isinstance(artifacts, dict):

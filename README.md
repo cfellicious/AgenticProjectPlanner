@@ -41,9 +41,10 @@ The idea-to-plan workflow:
 1. **Discovery**: ask clarifying questions that expand the user's idea into concrete product intent.
 2. **Readiness**: classify missing information as either user-owned product decisions or agent-filled engineering defaults.
 3. **Planning**: generate a markdown implementation plan with architecture, schema, risks, security, tests, performance, delivery, future concerns, and open issues.
-4. **Architect Review**: run seven configured reviewer agents to critique the plan from different product, engineering, implementation, staffing, and operations viewpoints.
-5. **Review-driven clarification**: convert reviewer comments that require user-owned product decisions into concrete user questions before consolidation.
-6. **Arbitration/Consolidation**: merge review feedback and user clarifications into an improved plan and repeat for configurable iterations.
+4. **Reviewer selection**: when `dynamic_reviewer_selection` or `INSPECTOR_DYNAMIC_REVIEWER_SELECTION=true` is enabled, the high-capacity arbitrator reads the generated plan, forms a concrete review strategy, and selects only relevant experts from the configured reviewer catalog.
+5. **Architect Review**: run the selected reviewer agents to critique the plan from relevant product, engineering, implementation, staffing, and operations viewpoints.
+6. **Review-driven clarification**: convert reviewer comments that require user-owned product decisions into concrete user questions before consolidation.
+7. **Arbitration/Consolidation**: merge review feedback and user clarifications into an improved plan and repeat for configurable iterations.
 
 The planner is idea-agnostic but domain-aware. It uses discovery dimensions rather than a fixed technical questionnaire. Prompts are written in plain language for non-technical users, then mapped into planning labels such as target users, primary journey, v1 scope, sensitive data, failure behavior, integrations, technology constraints, and launch criteria.
 
@@ -177,6 +178,7 @@ Runs create a timestamped folder under `output/`:
 - `iteration_01/devops-engineer_review.md`
 - `iteration_01/full-stack-engineer_review.md`
 - `iteration_01/team-lead_review.md`
+- `reviewer_selection.md`
 - `iteration_01/user_review_clarifications.md`
 - `iteration_01/consolidated_plan.md`
 - `related_version_context.md` for existing-plan architect critique runs
@@ -228,9 +230,10 @@ Example research question planner:
 }
 ```
 
-- The examples demonstrate a seven-reviewer default stack: Software Architect and Security Analyst backed by Claude, Delivery Manager, UI/UX Analyst, Full Stack Engineer, and Team Lead backed by OpenAI, DevOps Engineer backed by Grok, and an Arbitrator backed by Grok.
+- The examples demonstrate a reviewer catalog with default and optional experts. With dynamic reviewer selection enabled, the arbitrator uses the configured high-capacity model, for example `OPENAI_DEEP_MODEL`, to select the relevant reviewers before critique starts.
 - `reviewers` and `arbitrator` support `mock`, `openai`/`responses`, `anthropic`, and OpenAI-compatible chat providers via `grok`, `openai_chat`, or `chat_completions`.
 - Reviewer entries can include `category` metadata and `active`. Reviewers with `active: false` are skipped; missing `active` defaults to enabled for backward compatibility.
+- With dynamic reviewer selection enabled, `active: false` reviewers remain available in the expert catalog but are only run when the arbitrator selects them for the specific idea or plan.
 - Each reviewer and the arbitrator can include a `prompt` field. Keep this role-specific; shared contracts and repeated instructions belong at the top level. This lets one provider key run multiple distinct personas, for example Software Architect, Security Analyst, Delivery Manager, UI/UX Analyst, DevOps Engineer, Full Stack Engineer, and Team Lead.
 - Shared top-level config fields such as `document_goal`, `global_instruction`, `input_expectation`, `severity_scale`, `reviewer_output_contract`, and `final_output_contract` are automatically injected into every reviewer and arbitrator prompt before the role-specific prompt.
 - `runtime_prompt_composition` defines common reviewer and arbitrator instructions that the runtime injects during prompt assembly, so repeated instructions do not need to be copied into each reviewer prompt.

@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from inspector import (
     _build_runtime_agents,
+    _build_runtime_agents_for_plan,
     _compose_agent_prompt,
     _collect_related_plan_context,
     _extract_versions,
@@ -801,6 +802,94 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(runtime_mode, "mock")
         self.assertEqual([reviewer.name for reviewer in reviewers], ["Security Analyst", "Domain Expert"])
+
+    def test_dynamic_reviewer_selection_skips_unneeded_database_expert(self) -> None:
+        config = env_config()
+        config.update(
+            {
+                "agent_mode": "mock",
+                "dynamic_reviewer_selection": "true",
+                "reviewers": json.dumps(
+                    [
+                        {
+                            "name": "Software Architect",
+                            "category": "default",
+                            "active": True,
+                            "provider": "mock",
+                            "prompt": "Focus on architecture.",
+                        },
+                        {
+                            "name": "Database Engineer",
+                            "category": "default",
+                            "active": True,
+                            "provider": "mock",
+                            "prompt": "Focus on database design.",
+                        },
+                        {
+                            "name": "Legal Risk Reviewer",
+                            "category": "optional",
+                            "active": False,
+                            "provider": "mock",
+                            "activate_when": "Use for legal exposure.",
+                            "prompt": "Focus on legal risk.",
+                        },
+                    ]
+                ),
+                "arbitrator": json.dumps({"name": "Arbitrator", "provider": "mock"}),
+            }
+        )
+
+        reviewers, _consolidator, runtime_mode, selection = _build_runtime_agents_for_plan(
+            config,
+            idea="A static landing page calculator with no database and no persistent data",
+            workflow="idea-to-plan-with-architect-review",
+            plan_md="# Plan\n\nBuild a static landing page calculator. No database. Does not store user data.",
+        )
+
+        self.assertEqual(runtime_mode, "mock-dynamic")
+        self.assertEqual([reviewer.name for reviewer in reviewers], ["Software Architect"])
+        self.assertEqual(selection.source, "arbitrator")
+
+    def test_dynamic_reviewer_selection_can_activate_optional_expert(self) -> None:
+        config = env_config()
+        config.update(
+            {
+                "agent_mode": "mock",
+                "dynamic_reviewer_selection": "true",
+                "reviewers": json.dumps(
+                    [
+                        {
+                            "name": "Software Architect",
+                            "category": "default",
+                            "active": True,
+                            "provider": "mock",
+                            "prompt": "Focus on architecture.",
+                        },
+                        {
+                            "name": "Billing and Finance Reviewer",
+                            "category": "optional",
+                            "active": False,
+                            "provider": "mock",
+                            "activate_when": "Use for payments and subscriptions.",
+                            "prompt": "Focus on billing.",
+                        },
+                    ]
+                ),
+                "arbitrator": json.dumps({"name": "Arbitrator", "provider": "mock"}),
+            }
+        )
+
+        reviewers, _consolidator, _runtime_mode, _selection = _build_runtime_agents_for_plan(
+            config,
+            idea="A subscription billing portal with invoices and refunds",
+            workflow="idea-to-plan-with-architect-review",
+            plan_md="# Plan\n\nUsers manage subscriptions, invoices, payment failure handling, and refunds.",
+        )
+
+        self.assertEqual(
+            [reviewer.name for reviewer in reviewers],
+            ["Software Architect", "Billing and Finance Reviewer"],
+        )
 
     def test_review_artifact_names_are_slugged_and_unique(self) -> None:
         used: set[str] = set()
