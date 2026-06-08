@@ -36,10 +36,12 @@ from planner import (
     assess_discovery,
     assess_research_discovery,
     build_initial_plan,
+    build_initial_problem_plan,
     build_initial_research_plan,
     display_question_for_user,
     generate_review_follow_up_questions,
     generate_questions,
+    generate_problem_questions,
     generate_research_questions,
     guidance_for,
     hardware_requirements_for,
@@ -47,6 +49,8 @@ from planner import (
     needs_detail_for_question,
     normalize_dynamic_research_questions,
     product_name_from_answers,
+    PROBLEM_QUESTION_BANK,
+    problem_name_from_answers,
     RESEARCH_QUESTION_BANK,
     research_project_name_from_answers,
     sentence_count,
@@ -131,6 +135,33 @@ class PlannerTests(unittest.TestCase):
         self.assertIn("Do not claim novelty until the search", plan)
         self.assertNotIn("## 18. Database Schema", plan)
         self.assertEqual(research_project_name_from_answers("fallback", answers), "PlanEval")
+
+    def test_generate_problem_questions_use_issue_framing(self) -> None:
+        questions = generate_problem_questions("Checkout fails after tax rollout")
+        joined = "\n".join(questions)
+
+        self.assertIn("What issue do you need to fix", joined)
+        self.assertIn("What is happening now", joined)
+        self.assertIn("What evidence do you have", joined)
+        self.assertIn("Can the issue be reproduced", joined)
+        self.assertIn("How will you know the problem is solved", joined)
+        self.assertNotIn("How should this product make money", joined)
+        self.assertNotIn("main research question", joined)
+
+    def test_initial_problem_plan_contains_problem_solver_sections(self) -> None:
+        answers = {q: "answer" for q in PROBLEM_QUESTION_BANK}
+        answers["What short name should this problem or issue use?"] = "Checkout Tax Failure"
+        plan = build_initial_problem_plan("Checkout fails after tax rollout", answers)
+
+        self.assertIn("# Problem-Solving Plan: Checkout fails after tax rollout", plan)
+        self.assertIn("## 8. Triage Summary", plan)
+        self.assertIn("## 10. Root-Cause Hypotheses", plan)
+        self.assertIn("## 11. Investigation Plan", plan)
+        self.assertIn("## 12. Fix Strategy", plan)
+        self.assertIn("## 13. Validation Plan", plan)
+        self.assertIn("## 14. Rollout, Rollback, and Communication", plan)
+        self.assertIn("Separate symptoms, confirmed facts, hypotheses", plan)
+        self.assertEqual(problem_name_from_answers("fallback", answers), "Checkout Tax Failure")
 
     def test_research_discovery_marks_critical_gaps_not_ready(self) -> None:
         answers = {q: "answer" for q in RESEARCH_QUESTION_BANK}
@@ -687,11 +718,13 @@ class WorkflowTests(unittest.TestCase):
                 Path("inspector.new-idea.config.json").write_text("{}", encoding="utf-8")
                 Path("inspector.existing-plan.config.json").write_text("{}", encoding="utf-8")
                 Path("inspector.research.config.json").write_text("{}", encoding="utf-8")
+                Path("inspector.problem.config.json").write_text("{}", encoding="utf-8")
 
                 with patch.dict("os.environ", {}, clear=True):
                     self.assertEqual(default_config_path("new-idea"), Path("inspector.new-idea.config.json"))
                     self.assertEqual(default_config_path("existing-plan"), Path("inspector.existing-plan.config.json"))
                     self.assertEqual(default_config_path("research"), Path("inspector.research.config.json"))
+                    self.assertEqual(default_config_path("problem"), Path("inspector.problem.config.json"))
             finally:
                 os.chdir(previous_cwd)
 
@@ -718,6 +751,10 @@ class WorkflowTests(unittest.TestCase):
                     json.dumps({"default_iterations": 3, "output_dir": "research-output"}),
                     encoding="utf-8",
                 )
+                Path("inspector.problem.config.json").write_text(
+                    json.dumps({"default_iterations": 5, "output_dir": "problem-output"}),
+                    encoding="utf-8",
+                )
 
                 with patch.dict("os.environ", {}, clear=True):
                     with patch.object(sys, "argv", ["inspector.py", "--idea", "A product idea"]):
@@ -726,6 +763,8 @@ class WorkflowTests(unittest.TestCase):
                         existing_args = parse_args()
                     with patch.object(sys, "argv", ["inspector.py", "--research", "A market research topic"]):
                         research_args = parse_args()
+                    with patch.object(sys, "argv", ["inspector.py", "--problem", "A production issue"]):
+                        problem_args = parse_args()
 
                 self.assertEqual(idea_args.iterations, 4)
                 self.assertEqual(idea_args.output, "new-output")
@@ -737,6 +776,9 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(research_args.iterations, 3)
                 self.assertEqual(research_args.output, "research-output")
                 self.assertEqual(research_args.config_file, Path("inspector.research.config.json"))
+                self.assertEqual(problem_args.iterations, 5)
+                self.assertEqual(problem_args.output, "problem-output")
+                self.assertEqual(problem_args.config_file, Path("inspector.problem.config.json"))
             finally:
                 os.chdir(previous_cwd)
 

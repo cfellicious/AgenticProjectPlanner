@@ -23,6 +23,7 @@ WORKFLOW_CONFIG_FILES = {
     "new-idea": "inspector.new-idea.config.json",
     "existing-plan": "inspector.existing-plan.config.json",
     "research": "inspector.research.config.json",
+    "problem": "inspector.problem.config.json",
 }
 
 

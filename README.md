@@ -22,6 +22,12 @@ Start from a research topic or product hypothesis:
 python3 src/inspector.py --research "Research whether a privacy-first photo sharing app is viable" --iterations 2
 ```
 
+Diagnose and solve a research, product, technical, customer, or operational issue:
+
+```bash
+python3 src/inspector.py --problem "Users cannot complete checkout after the new tax calculation rollout" --iterations 2
+```
+
 Add Obsidian idea-note context:
 
 ```bash
@@ -30,11 +36,12 @@ python3 src/inspector.py --idea "A B2B billing platform for freelancers" --obsid
 
 ## What it does
 
-The project supports three workflows:
+The project supports four workflows:
 
 1. **Idea-to-plan workflow**: turn a raw product idea into a structured implementation plan, then harden it through reviewer-agent critique.
 2. **Existing-plan architect critique workflow**: take an implementation plan markdown file and have configurable reviewer agents behave as senior software architects who critique architecture, performance, security, edge cases, and testing gaps. The arbitrator produces the revised final document.
 3. **Research-to-plan workflow**: take a research topic, early product hypothesis, market question, or product idea that needs research framing, then run the planning and architect-review pipeline with a research-specific agent configuration.
+4. **Problem-solver workflow**: take a research, product, technical, customer, or operational issue and produce a problem-resolution plan with triage, evidence, root-cause hypotheses, mitigation, durable fixes, validation, rollout, rollback, communication, and prevention.
 
 The idea-to-plan workflow:
 
@@ -53,6 +60,8 @@ Extra dimensions are added when the idea mentions broad signals such as AI, bill
 The research-to-plan workflow uses a separate research discovery flow. Instead of product launch, monetization, and v1 user-journey questions, it asks about research area, research problem, research question, hypothesis, related work, novelty, methodology, datasets or participants, evaluation design, metrics, constraints, ethics, reproducibility, target output, and venue/review expectations.
 
 Research runs can optionally use a `research_question_planner` agent to propose extra topic-specific discovery questions. This is additive only: static critical questions remain mandatory, agent output must be strict JSON, unsafe or duplicate questions are discarded, and the final question set is written to `discovery_questions.md` and embedded in `initial_plan.md` for reviewer context.
+
+The problem-solver workflow uses a separate issue-discovery flow. It asks about the problem type, actual versus expected behavior, impact, available evidence, reproduction, constraints, attempted fixes, risk tolerance, and resolution criteria. Its initial plan is structured around triage, known facts, root-cause hypotheses, investigation, mitigation, durable fix options, validation, rollout, rollback, stakeholder communication, and prevention. Use it when you need to fix a research issue, product issue, technical defect, customer-impacting problem, or operational incident rather than generate a new implementation plan.
 
 ## Discovery behavior
 
@@ -83,7 +92,7 @@ The discovery flow also asks for a product, workflow, and monetization explanati
 
 The discovery flow asks for the planned product name. Run output directories use that product name when available, for example `output/20260602_120000_planpilot/`, instead of using the raw idea text.
 
-At the end of idea or research data collection, the CLI asks for optional final context before generating the initial plan. Use this to add case-specific pain points, corrections, constraints, scope decisions, or assumptions that should be visible to reviewer agents and the arbitrator.
+At the end of idea, research, or problem data collection, the CLI asks for optional final context before generating the initial plan. Use this to add case-specific pain points, corrections, constraints, scope decisions, or assumptions that should be visible to reviewer agents and the arbitrator.
 
 ## Obsidian idea context
 
@@ -189,13 +198,14 @@ Runs create a timestamped folder under `output/`:
 - `risks.md`
 
 Existing-plan architect critique runs use the same artifact names and add `_architect_review` to the run directory name.
+Problem-solver runs use the same artifact names and add `_problem` to the run directory name.
 
 ## Notes
 
 - By default this project uses built-in deterministic mock agents so it runs without API keys.
 - The runtime supports any non-empty reviewer list plus one arbitrator.
-- Prefer workflow-specific config files for agent setup. Start from `inspector.new-idea.config.example.json` for `--idea`, `inspector.existing-plan.config.example.json` for `--plan-file`, and `inspector.research.config.example.json` for `--research`.
-- The CLI automatically uses `inspector.new-idea.config.json` for new ideas, `inspector.existing-plan.config.json` for existing-plan critique, and `inspector.research.config.json` for research runs when those files exist. Use `--config` or `INSPECTOR_CONFIG_FILE` to override.
+- Prefer workflow-specific config files for agent setup. Start from `inspector.new-idea.config.example.json` for `--idea`, `inspector.existing-plan.config.example.json` for `--plan-file`, `inspector.research.config.example.json` for `--research`, and `inspector.problem.config.example.json` for `--problem`.
+- The CLI automatically uses `inspector.new-idea.config.json` for new ideas, `inspector.existing-plan.config.json` for existing-plan critique, `inspector.research.config.json` for research runs, and `inspector.problem.config.json` for problem-solver runs when those files exist. Use `--config` or `INSPECTOR_CONFIG_FILE` to override.
 - Set provider-level model defaults once with `OPENAI_MODEL`, `ANTHROPIC_MODEL`, and `GROK_MODEL` in `.env`, or with top-level `openai_model`, `anthropic_model`, and `grok_model` in a workflow config. Reviewer and arbitrator entries inherit those defaults when they omit `model`.
 - Use an agent-level `model` only when one reviewer or arbitrator should intentionally use a different model than the provider default.
 - Use an agent-level `model_env` when one reviewer or arbitrator should read its model from a named environment variable, for example `OPENAI_FAST_MODEL` or `OPENAI_DEEP_MODEL`.

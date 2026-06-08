@@ -440,6 +440,72 @@ RESEARCH_DISCOVERY_DIMENSIONS = [
 
 RESEARCH_QUESTION_BANK = [dimension.prompt for dimension in RESEARCH_DISCOVERY_DIMENSIONS if not dimension.markers]
 
+PROBLEM_DISCOVERY_DIMENSIONS = [
+    DiscoveryDimension(
+        key="knowledge_level",
+        prompt="How technical are you for this problem? Choose one: non-technical, somewhat technical, or technical.",
+        planning_label="User knowledge level for problem-solving question tailoring",
+    ),
+    DiscoveryDimension(
+        key="problem_name",
+        prompt="What short name should this problem or issue use?",
+        planning_label="Problem short name",
+    ),
+    DiscoveryDimension(
+        key="problem_context",
+        prompt="What issue do you need to fix, and is it a research issue, product issue, technical issue, customer issue, or something else?",
+        planning_label="Problem context and type",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="current_behavior",
+        prompt="What is happening now, and what should happen instead?",
+        planning_label="Actual versus expected behavior",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="impact",
+        prompt="Who or what is affected, how severe is the impact, and when did it start?",
+        planning_label="Impact, severity, and start time",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="evidence",
+        prompt="What evidence do you have: logs, screenshots, metrics, user reports, papers, experiments, support tickets, or error messages?",
+        planning_label="Available evidence",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="reproduction",
+        prompt="Can the issue be reproduced? If yes, what are the steps? If no, what patterns have you noticed?",
+        planning_label="Reproduction steps or observed patterns",
+    ),
+    DiscoveryDimension(
+        key="constraints",
+        prompt="What constraints matter: deadline, budget, team capacity, production safety, data access, ethics, compliance, dependencies, or stakeholder limits?",
+        planning_label="Fix constraints",
+    ),
+    DiscoveryDimension(
+        key="attempted_fixes",
+        prompt="What have you already tried, and what happened?",
+        planning_label="Attempted fixes and outcomes",
+    ),
+    DiscoveryDimension(
+        key="risk_tolerance",
+        prompt="How much risk is acceptable for the fix: quick workaround, careful root-cause analysis, staged rollout, or no-risk change only?",
+        planning_label="Risk tolerance and fix style",
+        critical=True,
+    ),
+    DiscoveryDimension(
+        key="success_criteria",
+        prompt="How will you know the problem is solved?",
+        planning_label="Resolution success criteria",
+        critical=True,
+    ),
+]
+
+PROBLEM_QUESTION_BANK = [dimension.prompt for dimension in PROBLEM_DISCOVERY_DIMENSIONS if not dimension.markers]
+
 
 def _prompt_for(key: str) -> str:
     for dimension in DISCOVERY_DIMENSIONS:
@@ -450,6 +516,13 @@ def _prompt_for(key: str) -> str:
 
 def _research_prompt_for(key: str) -> str:
     for dimension in RESEARCH_DISCOVERY_DIMENSIONS:
+        if dimension.key == key:
+            return dimension.prompt
+    raise KeyError(key)
+
+
+def _problem_prompt_for(key: str) -> str:
+    for dimension in PROBLEM_DISCOVERY_DIMENSIONS:
         if dimension.key == key:
             return dimension.prompt
     raise KeyError(key)
@@ -474,6 +547,13 @@ def research_project_name_from_answers(topic: str, answers: Dict[str, str]) -> s
     return topic
 
 
+def problem_name_from_answers(problem: str, answers: Dict[str, str]) -> str:
+    problem_name = answers.get(_problem_prompt_for("problem_name"), "").strip()
+    if problem_name and not _is_low_signal(problem_name):
+        return problem_name
+    return problem
+
+
 def generate_questions(idea: str, answers: Dict[str, str] | None = None) -> List[str]:
     existing_answers = answers or {}
     lower_idea = idea.lower()
@@ -495,6 +575,20 @@ def generate_research_questions(topic: str, answers: Dict[str, str] | None = Non
     selected: List[str] = []
     for dimension in RESEARCH_DISCOVERY_DIMENSIONS:
         if dimension.markers and not any(marker in lower_topic for marker in dimension.markers):
+            continue
+        if dimension.prompt not in existing_answers:
+            selected.append(dimension.prompt)
+
+    return selected
+
+
+def generate_problem_questions(problem: str, answers: Dict[str, str] | None = None) -> List[str]:
+    existing_answers = answers or {}
+    lower_problem = problem.lower()
+
+    selected: List[str] = []
+    for dimension in PROBLEM_DISCOVERY_DIMENSIONS:
+        if dimension.markers and not any(marker in lower_problem for marker in dimension.markers):
             continue
         if dimension.prompt not in existing_answers:
             selected.append(dimension.prompt)
@@ -591,6 +685,8 @@ def needs_detail_for_question(question: str, answer: str) -> bool:
         return sentence_count(answer) < 10
     if question == _research_prompt_for("research_problem"):
         return sentence_count(answer) < 3
+    if question == _problem_prompt_for("problem_context"):
+        return sentence_count(answer) < 2
     return False
 
 
@@ -609,13 +705,20 @@ def detail_follow_up_for(question: str, answer: str) -> str:
             f"{remaining} more sentence{'s' if remaining != 1 else ''}. "
             "Cover the research gap, why it matters, and what would make the answer useful."
         )
+    if question == _problem_prompt_for("problem_context"):
+        remaining = max(2 - sentence_count(answer), 1)
+        return (
+            "Please expand this answer with at least "
+            f"{remaining} more sentence{'s' if remaining != 1 else ''}. "
+            "Cover the issue type, the context where it appears, and why it matters now."
+        )
     return follow_up_for(question)
 
 
 def user_knowledge_level(answers: Dict[str, str]) -> str:
     answer = answers.get(
         _prompt_for("knowledge_level"),
-        answers.get(_research_prompt_for("knowledge_level"), ""),
+        answers.get(_research_prompt_for("knowledge_level"), answers.get(_problem_prompt_for("knowledge_level"), "")),
     ).strip().lower()
     if any(marker in answer for marker in ("non", "beginner", "business", "founder", "not technical")):
         return "non-technical"
@@ -631,15 +734,23 @@ def user_knowledge_level(answers: Dict[str, str]) -> str:
 def display_question_for_user(question: str, answers: Dict[str, str]) -> str:
     level = user_knowledge_level(answers)
     is_research_question = question in {dimension.prompt for dimension in RESEARCH_DISCOVERY_DIMENSIONS}
+    is_problem_question = question in {dimension.prompt for dimension in PROBLEM_DISCOVERY_DIMENSIONS}
     if question in {
         _prompt_for("knowledge_level"),
         _prompt_for("product_name"),
         _research_prompt_for("knowledge_level"),
         _research_prompt_for("project_name"),
+        _problem_prompt_for("knowledge_level"),
+        _problem_prompt_for("problem_name"),
     }:
         return question
 
     if level == "non-technical":
+        if is_problem_question:
+            return (
+                f"{question}\n"
+                "Answer in plain problem terms. You do not need to know root-cause, debugging, statistics, or implementation terminology."
+            )
         if is_research_question:
             return (
                 f"{question}\n"
@@ -650,6 +761,11 @@ def display_question_for_user(question: str, answers: Dict[str, str]) -> str:
             "Answer in plain product/business terms. You do not need to know testing, security, database, or infrastructure terminology."
         )
     if level == "somewhat technical":
+        if is_problem_question:
+            return (
+                f"{question}\n"
+                "Use problem and impact terms first. Add technical, research, product, or operational details only where you already know them."
+            )
         if is_research_question:
             return (
                 f"{question}\n"
@@ -660,6 +776,11 @@ def display_question_for_user(question: str, answers: Dict[str, str]) -> str:
             "Use product terms first. Add technical preferences only where you already know them."
         )
     if level == "technical":
+        if is_problem_question:
+            return (
+                f"{question}\n"
+                "Include relevant diagnostics, reproduction data, constraints, suspected causes, metrics, logs, or rollout concerns if you know them."
+            )
         if is_research_question:
             return (
                 f"{question}\n"
@@ -916,6 +1037,170 @@ def assess_research_discovery(topic: str, answers: Dict[str, str]) -> DiscoveryA
         readiness_score=readiness_score,
         readiness_reason=readiness_reason,
     )
+
+
+def assess_problem_discovery(problem: str, answers: Dict[str, str]) -> DiscoveryAssessment:
+    questions = _dedupe(generate_problem_questions(problem, {}))
+    user_decisions: List[str] = []
+    needs_user_input: List[str] = []
+
+    for question in questions:
+        answer = answers.get(question, "Not specified")
+        if _is_low_signal(answer):
+            needs_user_input.append(question)
+        else:
+            user_decisions.append(f"{question} {answer}")
+
+    answered_count = len(user_decisions)
+    total_count = len(questions) or 1
+    readiness_score = round((answered_count / total_count) * 100)
+    critical_prompts = {dimension.prompt for dimension in PROBLEM_DISCOVERY_DIMENSIONS if dimension.critical}
+    critical_missing = [q for q in needs_user_input if q in critical_prompts]
+
+    if critical_missing:
+        readiness = "NOT READY"
+        readiness_reason = "Critical problem-solving inputs are unresolved."
+    elif needs_user_input:
+        readiness = "CONDITIONAL"
+        readiness_reason = "Enough exists for a first triage plan, but diagnostic gaps remain."
+    else:
+        readiness = "READY"
+        readiness_reason = "Discovery answers cover the required problem-solving inputs."
+
+    assumed_defaults = [
+        "Assumed Default: Separate symptoms, confirmed facts, hypotheses, and proposed fixes.",
+        "Assumed Default: Prefer reversible fixes and staged rollout unless impact requires emergency mitigation.",
+        "Assumed Default: Every root-cause hypothesis needs evidence that would confirm or disprove it.",
+        "Assumed Default: Resolution requires measurable validation plus regression or recurrence monitoring.",
+        "Assumed Default: If research evidence is uncertain, mark claims as assumptions until literature, experiment, or data review supports them.",
+    ]
+
+    return DiscoveryAssessment(
+        user_decisions=user_decisions,
+        needs_user_input=needs_user_input,
+        assumed_defaults=assumed_defaults,
+        readiness=readiness,
+        readiness_score=readiness_score,
+        readiness_reason=readiness_reason,
+    )
+
+
+def build_initial_problem_plan(problem: str, answers: Dict[str, str]) -> str:
+    assessment = assess_problem_discovery(problem, answers)
+    label_by_prompt = {dimension.prompt: dimension.planning_label for dimension in PROBLEM_DISCOVERY_DIMENSIONS}
+
+    lines = [
+        f"# Problem-Solving Plan: {problem}",
+        "",
+        "## 1. Problem Framing",
+        f"- Raw problem: {problem}",
+        "- Goal: convert the issue into a concrete diagnostic and remediation plan with evidence, hypotheses, safe fixes, validation, and escalation paths.",
+        "",
+        "## 2. Discovery Conversation",
+    ]
+    for q, a in answers.items():
+        lines.append(f"- **{q}** {a}")
+
+    lines.extend(
+        [
+            "",
+            "## 3. Problem-Solving Contract",
+            "- Do not jump from symptom to fix without preserving facts, assumptions, and competing hypotheses.",
+            "- Treat research, product, technical, customer, and operational issues as solvable through evidence, constraints, and validation.",
+            "- If data is missing, list the missing evidence and define the cheapest safe way to collect it.",
+            "- The final plan must distinguish immediate mitigation, root-cause analysis, durable fix, and follow-up prevention.",
+            "",
+            "## 4. Readiness Gate",
+            f"- Status: {assessment.readiness}",
+            f"- Score: {assessment.readiness_score}/100",
+            f"- Reason: {assessment.readiness_reason}",
+            "",
+            "## 5. Confirmed Problem Inputs",
+        ]
+    )
+    if assessment.user_decisions:
+        for item in assessment.user_decisions:
+            prompt, _, answer = item.partition("? ")
+            label = label_by_prompt.get(prompt + "?", prompt)
+            lines.append(f"- {label}: {answer if answer else item}")
+    else:
+        lines.append("- No validated problem inputs yet.")
+
+    lines.extend(["", "## 6. Assumed Diagnostic Defaults"])
+    for default in assessment.assumed_defaults:
+        lines.append(f"- {default}")
+
+    lines.extend(["", "## 7. Needs More Input"])
+    if assessment.needs_user_input:
+        for item in assessment.needs_user_input:
+            lines.append(f"- {item}")
+    else:
+        lines.append("- None.")
+
+    lines.extend(
+        [
+            "",
+            "## 8. Triage Summary",
+            "- Classify severity, affected users/systems/research claims, blast radius, and urgency.",
+            "- Decide whether immediate mitigation is required before deeper investigation.",
+            "- Identify owner, decision-maker, and escalation path.",
+            "",
+            "## 9. Facts, Symptoms, and Evidence",
+            "- Facts: list only confirmed observations.",
+            "- Symptoms: describe user-facing, product-facing, research-facing, or system-facing failures.",
+            "- Evidence: attach or collect logs, metrics, screenshots, experiments, papers, tickets, support reports, or reproduction notes.",
+            "",
+            "## 10. Root-Cause Hypotheses",
+            "- Create at least three plausible hypotheses before choosing a fix.",
+            "- For each hypothesis, define confirming evidence, disconfirming evidence, and fastest safe test.",
+            "- Separate product misunderstanding, research-design weakness, technical defect, data issue, process gap, and external dependency failure where relevant.",
+            "",
+            "## 11. Investigation Plan",
+            "1. Preserve current evidence and avoid destructive changes.",
+            "2. Reproduce the issue or identify why it is intermittent.",
+            "3. Check recent changes, dependencies, data shifts, user behavior, research assumptions, and operational events.",
+            "4. Run targeted tests that can eliminate hypotheses quickly.",
+            "5. Document findings, unknowns, and confidence before implementing the durable fix.",
+            "",
+            "## 12. Fix Strategy",
+            "- Immediate mitigation: reduce harm, unblock affected users, or pause unsafe claims/workflows.",
+            "- Durable fix: address the confirmed root cause, not only the visible symptom.",
+            "- Prevention: add guardrails, tests, monitoring, documentation, training, or research protocol changes.",
+            "- Fallback: define what to do if the first fix fails or evidence contradicts the chosen cause.",
+            "",
+            "## 13. Validation Plan",
+            "- Define pass/fail checks tied to the stated success criteria.",
+            "- Include regression tests, counterexamples, monitoring windows, stakeholder review, or replication checks as appropriate.",
+            "- For research issues, validate claims against evidence, methodology, baselines, metrics, and related-work positioning.",
+            "- For product issues, validate user impact, usability, support burden, rollout safety, and customer communication.",
+            "",
+            "## 14. Rollout, Rollback, and Communication",
+            "- Roll out in the smallest safe scope first unless emergency impact requires broader mitigation.",
+            "- Define rollback or reversal steps before applying the fix.",
+            "- Communicate impact, status, workaround, ETA, and final resolution to affected stakeholders.",
+            "",
+            "## 15. Risks and Tradeoffs",
+            "- Risk of treating correlation as root cause.",
+            "- Risk of overfitting the fix to one report, dataset, user segment, or environment.",
+            "- Risk of introducing a regression while solving the visible issue.",
+            "- Risk of leaving product, research, or operational ownership unclear.",
+            "",
+            "## 16. Decision Log",
+            "- Record chosen hypothesis, rejected hypotheses, evidence, fix owner, approval, rollout time, and validation result.",
+            "",
+            "## 17. Review Handoff",
+            "- Reviewer agents should challenge diagnosis quality, missing evidence, unsafe fixes, validation gaps, product/research tradeoffs, and unresolved ownership.",
+            "- Reviewer agents should propose concrete tests, experiments, customer/product checks, or operational mitigations.",
+            "- Arbitrator should produce a final problem-resolution plan, not a generic implementation plan.",
+            "",
+            "## 18. Open Questions",
+            "- Which evidence is still missing?",
+            "- Which stakeholders must approve the fix?",
+            "- What recurrence signal would prove the issue is not actually solved?",
+        ]
+    )
+
+    return "\n".join(lines) + "\n"
 
 
 def build_initial_research_plan(topic: str, answers: Dict[str, str]) -> str:

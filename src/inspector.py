@@ -40,18 +40,21 @@ from planner import (
     DynamicQuestion,
     append_review_clarifications,
     build_initial_plan,
+    build_initial_problem_plan,
     build_initial_research_plan,
     detail_follow_up_for,
     display_question_for_user,
     follow_up_for,
     generate_review_follow_up_questions,
     generate_questions,
+    generate_problem_questions,
     generate_research_questions,
     guidance_for,
     merge_research_questions,
     needs_detail_for_question,
     normalize_dynamic_research_questions,
     product_name_from_answers,
+    problem_name_from_answers,
     research_project_name_from_answers,
     should_ask_follow_up,
     slugify,
@@ -1856,6 +1859,69 @@ def run_research(
     return final_path
 
 
+def run_problem(
+    problem: str,
+    iterations: int,
+    output_root: Path,
+    config_file: Path | None = None,
+    obsidian_idea_file: str = "",
+) -> Path:
+    config = env_config(config_file=config_file)
+    answers: Dict[str, str] = {}
+    print("Answer problem-solving discovery questions before the plan is generated.")
+    for q in generate_problem_questions(problem):
+        answer = prompt_user(display_question_for_user(q, answers))
+        answer = resolve_answer(problem, q, answer)
+        while needs_detail_for_question(q, answer):
+            detail_answer = prompt_user(display_question_for_user(detail_follow_up_for(q, answer), answers))
+            answer = f"{answer.rstrip()} {resolve_answer(problem, q, detail_answer)}"
+        answers[q] = answer
+        if should_ask_follow_up(answer):
+            follow_up = follow_up_for(q)
+            follow_up_answer = prompt_user(display_question_for_user(follow_up, answers))
+            answers[follow_up] = resolve_answer(problem, follow_up, follow_up_answer)
+
+    collect_final_discovery_context(problem, answers)
+    problem_name = problem_name_from_answers(problem, answers)
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = output_root / f"{timestamp}_{slugify(problem_name)[:40]}_problem"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    current_plan = build_initial_problem_plan(problem, answers)
+    extra_artifacts: Dict[str, Path] = {}
+    selected_obsidian_file = obsidian_idea_file.strip() or config.get("obsidian_idea_file", "").strip()
+    if selected_obsidian_file:
+        obsidian_context, obsidian_artifact = _load_obsidian_context_artifact(
+            idea_file=selected_obsidian_file,
+            run_dir=run_dir,
+            max_depth=_as_int(config.get("obsidian_max_depth", "1"), default=1),
+            max_notes=_as_int(config.get("obsidian_max_notes", "12"), default=12, minimum=1),
+        )
+        current_plan = f"{current_plan.rstrip()}\n\n{obsidian_context}"
+        extra_artifacts["obsidian_context"] = obsidian_artifact
+    initial_plan_path = run_dir / "initial_plan.md"
+    write_text(initial_plan_path, current_plan)
+    print(f"\nInitial problem-solving plan written: {initial_plan_path}")
+    reviewer_catalog_override = _maybe_update_reviewer_catalog_for_technical_user(
+        config=config,
+        answers=answers,
+    )
+
+    return _run_review_iterations(
+        current_plan=current_plan,
+        run_dir=run_dir,
+        iterations=iterations,
+        idea=problem,
+        product_name=problem_name,
+        workflow="problem-solver-with-review",
+        initial_artifact=initial_plan_path,
+        ask_review_clarifications=False,
+        extra_artifacts=extra_artifacts,
+        config_file=config_file,
+        reviewer_catalog_override=reviewer_catalog_override,
+    )
+
+
 def run_plan_review(plan_path: Path, iterations: int, output_root: Path, config_file: Path | None = None) -> Path:
     if not plan_path.exists():
         raise SystemExit(f"Plan file does not exist: {plan_path}")
@@ -1900,12 +1966,15 @@ def parse_args() -> argparse.Namespace:
     pre_source.add_argument("--idea")
     pre_source.add_argument("--plan-file")
     pre_source.add_argument("--research")
+    pre_source.add_argument("--problem")
     pre_parser.add_argument("--config")
     pre_args, _remaining = pre_parser.parse_known_args()
     if pre_args.plan_file:
         workflow = "existing-plan"
     elif pre_args.research:
         workflow = "research"
+    elif pre_args.problem:
+        workflow = "problem"
     else:
         workflow = "new-idea"
     config_file = Path(pre_args.config) if pre_args.config else default_config_path(workflow)
@@ -1916,12 +1985,13 @@ def parse_args() -> argparse.Namespace:
     source.add_argument("--idea", help="High-level product or feature idea.")
     source.add_argument("--plan-file", help="Existing implementation plan markdown file to critique as software architects.")
     source.add_argument("--research", help="Research topic, product idea, or market hypothesis to turn into an implementation plan.")
+    source.add_argument("--problem", help="Research, product, technical, customer, or operational issue to diagnose and solve.")
     parser.add_argument(
         "--config",
         help=(
             "Optional config file. Defaults to inspector.new-idea.config.json for --idea, "
             "inspector.existing-plan.config.json for --plan-file, and inspector.research.config.json "
-            "for --research when present."
+            "for --research, or inspector.problem.config.json for --problem when present."
         ),
     )
     parser.add_argument(
@@ -1954,6 +2024,8 @@ def main() -> None:
         run_plan_review(Path(args.plan_file), args.iterations, Path(args.output), args.config_file)
     elif args.research:
         run_research(args.research, args.iterations, Path(args.output), args.config_file, args.obsidian_idea_file)
+    elif args.problem:
+        run_problem(args.problem, args.iterations, Path(args.output), args.config_file, args.obsidian_idea_file)
     else:
         run(args.idea, args.iterations, Path(args.output), args.config_file, obsidian_idea_file=args.obsidian_idea_file)
 
